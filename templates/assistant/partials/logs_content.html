@@ -1,0 +1,38 @@
+{% load i18n djicons %}
+
+<div class="p-4">
+    <h2 class="text-xl font-semibold mb-4">{% trans "Action Log" %}</h2>
+
+    {% if logs %}
+    <div class="list list-inset">
+        {% for log in logs %}
+        <div class="list-item list-item-multiline">
+            <div class="list-item-start">
+                {% if log.success %}
+                    {% icon "checkmark-circle-outline" css_class="text-success" %}
+                {% else %}
+                    {% icon "close-circle-outline" css_class="text-error" %}
+                {% endif %}
+            </div>
+            <div class="list-item-content">
+                <div class="list-item-label">
+                    {{ log.tool_name }}
+                    {% if log.confirmed %}
+                        <span class="badge badge-sm color-success ml-1">{% trans "confirmed" %}</span>
+                    {% else %}
+                        <span class="badge badge-sm color-warning ml-1">{% trans "pending" %}</span>
+                    {% endif %}
+                </div>
+                <div class="list-item-note">{{ log.created_at|date:"d/m/Y H:i:s" }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="callout callout-info">
+        <div class="callout-content">
+            <div class="callout-text">{% trans "No actions logged yet." %}</div>
+        </div>
+    </div>
+    {% endif %}
+</div>

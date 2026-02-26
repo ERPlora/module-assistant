@@ -1,0 +1,16 @@
+from django.urls import path
+from . import views
+
+app_name = 'assistant'
+
+urlpatterns = [
+    # Pages (GET)
+    path('', views.chat_page, name='chat'),
+    path('history/', views.history_page, name='history'),
+    path('logs/', views.logs_page, name='logs'),
+
+    # API (POST)
+    path('chat/', views.chat, name='chat_message'),
+    path('confirm/<int:log_id>/', views.confirm_action, name='confirm_action'),
+    path('cancel/<int:log_id>/', views.cancel_action, name='cancel_action'),
+]

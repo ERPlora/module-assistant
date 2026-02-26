@@ -1,0 +1,36 @@
+{% load i18n djicons %}
+
+<div class="p-4">
+    <h2 class="text-xl font-semibold mb-4">{% trans "Conversation History" %}</h2>
+
+    {% if conversations %}
+    <div class="list list-inset">
+        {% for conv in conversations %}
+        <div class="list-item list-item-clickable"
+             hx-get="{% url 'assistant:chat' %}?conversation_id={{ conv.id }}"
+             hx-target="#main-content-area"
+             hx-push-url="{% url 'assistant:chat' %}">
+            <div class="list-item-start">
+                {% icon "chatbubbles-outline" %}
+            </div>
+            <div class="list-item-content">
+                <div class="list-item-label">
+                    {% trans "Conversation" %} #{{ conv.id }}
+                    <span class="badge badge-sm ml-2">{{ conv.context }}</span>
+                </div>
+                <div class="list-item-note">{{ conv.updated_at|date:"d/m/Y H:i" }}</div>
+            </div>
+            <div class="list-item-end list-item-chevron">
+                {% icon "chevron-forward-outline" %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="callout callout-info">
+        <div class="callout-content">
+            <div class="callout-text">{% trans "No conversations yet. Start chatting in the Chat tab." %}</div>
+        </div>
+    </div>
+    {% endif %}
+</div>
