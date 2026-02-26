@@ -35,7 +35,6 @@ class AssistantTool:
             'name': self.name,
             'description': self.description,
             'parameters': self.parameters,
-            'strict': True,
         }
 
 
@@ -46,6 +45,23 @@ def register_tool(tool_cls):
         raise ValueError(f"Tool class {tool_cls.__name__} must define a 'name' attribute")
     TOOL_REGISTRY[instance.name] = instance
     return tool_cls
+
+
+def _get_active_module_ids():
+    """Get active module IDs by scanning the modules directory."""
+    from django.conf import settings
+    from pathlib import Path
+
+    modules_dir = Path(settings.MODULES_DIR)
+    module_ids = []
+    if modules_dir.exists():
+        for module_dir in modules_dir.iterdir():
+            if not module_dir.is_dir():
+                continue
+            if module_dir.name.startswith('.') or module_dir.name.startswith('_'):
+                continue
+            module_ids.append(module_dir.name)
+    return module_ids
 
 
 def discover_tools():
@@ -65,11 +81,7 @@ def discover_tools():
         logger.error(f"[ASSISTANT] Failed to load core tools: {e}")
 
     # 2. Discover ai_tools.py in each active module
-    try:
-        from apps.modules_runtime.loader import module_loader
-        active_modules = list(module_loader.loaded_modules.keys())
-    except ImportError:
-        active_modules = []
+    active_modules = _get_active_module_ids()
 
     for module_id in active_modules:
         if module_id == 'assistant':
@@ -96,11 +108,7 @@ def get_tools_for_context(context='general', user=None):
     if not TOOL_REGISTRY:
         discover_tools()
 
-    try:
-        from apps.modules_runtime.loader import module_loader
-        active_modules = set(module_loader.loaded_modules.keys())
-    except ImportError:
-        active_modules = set()
+    active_modules = set(_get_active_module_ids())
 
     tools = []
     for tool in TOOL_REGISTRY.values():

@@ -1,19 +1,9 @@
 {% load i18n djicons static %}
 
-<div x-data="assistantChat()" class="flex flex-col h-full" style="min-height: calc(100vh - 180px);">
-    <!-- Tier badge -->
-    <div x-show="tierName" x-cloak
-         class="flex items-center justify-between px-4 py-2 border-b border-base-200 text-xs">
-        <span class="badge badge-sm" x-text="tierName"></span>
-        <span x-show="sessionsLimit > 0" class="opacity-60">
-            <span x-text="sessionsUsed"></span> / <span x-text="sessionsLimit"></span> {% trans "sessions" %}
-        </span>
-    </div>
-
+<div class="flex flex-col h-full" style="min-height: calc(100vh - 180px);">
     <!-- Chat messages area -->
     <div id="chat-messages"
-         class="flex-1 overflow-y-auto p-4 flex flex-col gap-3"
-         x-ref="messages">
+         class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
 
         <!-- Welcome message -->
         <div class="chat-message chat-assistant">
@@ -31,54 +21,143 @@
 
     <!-- Input area -->
     <div class="p-4 border-t border-base-200">
-        <form @submit.prevent="sendMessage"
+        <form id="chat-form"
               hx-post="{% url 'assistant:chat_message' %}"
               hx-target="#chat-messages"
               hx-swap="beforeend"
-              hx-on::before-request="beforeSend(event)"
-              hx-on::after-request="afterSend(event)"
-              x-ref="chatForm">
+              hx-indicator="#chat-loading"
+              hx-disabled-elt="#chat-submit, #chat-input, #chat-mic"
+              hx-on::before-request="
+                  var input = document.getElementById('chat-input');
+                  var msg = input.value.trim();
+                  if (!msg) { event.preventDefault(); return; }
+                  var msgs = document.getElementById('chat-messages');
+                  var bubble = document.createElement('div');
+                  bubble.className = 'chat-message chat-user';
+                  bubble.innerHTML = '<div class=\'chat-bubble\'>' + msg.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
+                  msgs.appendChild(bubble);
+                  var typing = document.createElement('div');
+                  typing.id = 'typing-indicator';
+                  typing.className = 'chat-message chat-assistant';
+                  typing.innerHTML = '<div class=&quot;chat-typing&quot;><span class=&quot;chat-typing-dot&quot;></span><span class=&quot;chat-typing-dot&quot;></span><span class=&quot;chat-typing-dot&quot;></span></div>';
+                  msgs.appendChild(typing);
+                  msgs.scrollTop = msgs.scrollHeight;
+                  input.value = '';
+                  input.style.height = 'auto';
+              "
+              hx-on::after-request="
+                  var typing = document.getElementById('typing-indicator');
+                  if (typing) typing.remove();
+                  var msgs = document.getElementById('chat-messages');
+                  msgs.scrollTop = msgs.scrollHeight;
+                  var xhr = event.detail.xhr;
+                  if (xhr) {
+                      var convId = xhr.getResponseHeader('X-Conversation-Id');
+                      if (convId) document.getElementById('conv-id').value = convId;
+                  }
+              ">
             {% csrf_token %}
-            <input type="hidden" name="conversation_id" :value="conversationId">
+            <input type="hidden" name="conversation_id" id="conv-id" value="">
             <input type="hidden" name="context" value="{{ context|default:'general' }}">
 
             <div class="flex gap-2 items-end">
                 <textarea
                     name="message"
-                    x-ref="messageInput"
+                    id="chat-input"
                     class="input flex-1"
                     rows="1"
-                    :placeholder="recording ? '{% trans "Listening..." %}' : (loading ? '{% trans "Thinking..." %}' : '{% trans "Type or speak a message..." %}')"
-                    :disabled="loading"
-                    @keydown.enter.prevent="if (!$event.shiftKey) $refs.chatForm.requestSubmit()"
-                    @input="autoResize($el)"
+                    placeholder="{% trans 'Type a message...' %}"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); document.getElementById('chat-form').requestSubmit();}"
+                    oninput="this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,120)+'px';"
                     style="resize: none; max-height: 120px;"></textarea>
                 <button type="button"
-                        x-show="speechSupported"
-                        @click="toggleVoice()"
-                        class="btn"
-                        :class="recording ? 'color-error' : 'btn-ghost'"
-                        :disabled="loading">
-                    <template x-if="!recording">
-                        <span>{% icon "mic-outline" %}</span>
-                    </template>
-                    <template x-if="recording">
-                        <span>{% icon "stop-outline" %}</span>
-                    </template>
+                        id="chat-mic"
+                        class="btn btn-ghost"
+                        onclick="toggleVoiceInput(this)"
+                        title="{% trans 'Voice input' %}">
+                    {% icon "mic-outline" %}
                 </button>
                 <button type="submit"
-                        class="btn color-primary"
-                        :disabled="loading">
-                    <template x-if="!loading">
-                        <span>{% icon "send-outline" %}</span>
-                    </template>
-                    <template x-if="loading">
-                        <span class="loading loading-sm"></span>
-                    </template>
+                        id="chat-submit"
+                        class="btn color-primary">
+                    <span id="chat-loading" class="loading loading-sm htmx-indicator"></span>
+                    <span class="when-not-loading">{% icon "send-outline" %}</span>
                 </button>
             </div>
         </form>
     </div>
 </div>
 
-<script src="{% static 'assistant/js/assistant.js' %}"></script>
+<style>
+    #chat-submit .when-not-loading { display: inline; }
+    #chat-submit.htmx-request .when-not-loading { display: none; }
+    #chat-loading { display: none; }
+    #chat-submit.htmx-request #chat-loading,
+    .htmx-request #chat-loading { display: inline-block; }
+    .chat-bubble.prose { max-width: none; }
+    .chat-bubble.prose ul { list-style: disc; padding-left: 1.5em; }
+    .chat-bubble.prose ol { list-style: decimal; padding-left: 1.5em; }
+    .chat-bubble.prose p { margin-bottom: 0.5em; }
+    .chat-bubble.prose p:last-child { margin-bottom: 0; }
+    .chat-bubble.prose strong { font-weight: 600; }
+    .chat-bubble.prose table { width: 100%; border-collapse: collapse; margin: 0.5em 0; font-size: 0.875em; }
+    .chat-bubble.prose th, .chat-bubble.prose td { border: 1px solid var(--color-base-300); padding: 0.25em 0.5em; text-align: left; }
+    .chat-bubble.prose th { font-weight: 600; background: var(--color-base-200); }
+    #chat-mic.recording { color: var(--color-error); }
+    .chat-typing { display: flex; gap: 4px; padding: 8px 12px; }
+    .chat-typing-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--color-base-content); opacity: 0.4;
+        animation: chatTyping 1.4s infinite ease-in-out both;
+    }
+    .chat-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .chat-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes chatTyping {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+        40% { transform: scale(1); opacity: 1; }
+    }
+</style>
+
+<script>
+function toggleVoiceInput(btn) {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    if (btn._recognition) {
+        btn._recognition.stop();
+        btn._recognition = null;
+        btn.classList.remove('recording', 'color-error');
+        return;
+    }
+
+    var recognition = new SR();
+    recognition.lang = document.documentElement.lang || 'en';
+    recognition.interimResults = true;
+    recognition.continuous = false;
+
+    var input = document.getElementById('chat-input');
+    var beforeText = input.value;
+
+    recognition.onresult = function(event) {
+        var transcript = '';
+        for (var i = 0; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript;
+        }
+        input.value = beforeText + (beforeText ? ' ' : '') + transcript;
+    };
+
+    recognition.onend = function() {
+        btn._recognition = null;
+        btn.classList.remove('recording', 'color-error');
+    };
+
+    recognition.onerror = function(event) {
+        btn._recognition = null;
+        btn.classList.remove('recording', 'color-error');
+    };
+
+    btn._recognition = recognition;
+    btn.classList.add('recording', 'color-error');
+    recognition.start();
+}
+</script>

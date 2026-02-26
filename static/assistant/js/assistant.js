@@ -14,15 +14,6 @@ function assistantChat() {
         speechSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
         _recognition: null,
 
-        sendMessage() {
-            const input = this.$refs.messageInput;
-            const message = input.value.trim();
-            if (!message || this.loading) return;
-
-            // Trigger HTMX submit
-            this.$refs.chatForm.requestSubmit();
-        },
-
         beforeSend(event) {
             const input = this.$refs.messageInput;
             const message = input.value.trim();
@@ -52,10 +43,6 @@ function assistantChat() {
             messagesEl.appendChild(typing);
 
             this.scrollToBottom();
-
-            // Clear input
-            input.value = '';
-            input.style.height = 'auto';
         },
 
         afterSend(event) {
@@ -64,6 +51,11 @@ function assistantChat() {
             // Remove typing indicator
             const typing = document.getElementById('typing-indicator');
             if (typing) typing.remove();
+
+            // Clear input and reset height
+            const input = this.$refs.messageInput;
+            input.value = '';
+            input.style.height = 'auto';
 
             // Extract headers from response
             const xhr = event.detail.xhr;

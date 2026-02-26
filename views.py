@@ -309,9 +309,14 @@ def chat(request):
     html_parts = []
 
     if response_text:
+        import markdown as md
+        rendered_content = md.markdown(
+            response_text,
+            extensions=['tables', 'fenced_code', 'nl2br'],
+        )
         html_parts.append(render_to_string('assistant/partials/message.html', {
             'role': 'assistant',
-            'content': response_text,
+            'content': rendered_content,
         }, request=request))
 
     if pending_confirmation:

@@ -2,14 +2,14 @@
 
 {% if role == 'assistant' %}
 <div class="chat-message chat-assistant">
-    <div class="chat-bubble">
-        {{ content|linebreaksbr }}
+    <div class="chat-bubble prose">
+        {{ content|safe }}
     </div>
 </div>
 {% elif role == 'user' %}
 <div class="chat-message chat-user">
     <div class="chat-bubble">
-        {{ content|linebreaksbr }}
+        {{ content }}
     </div>
 </div>
 {% elif role == 'system' %}
