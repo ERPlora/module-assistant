@@ -2,8 +2,25 @@ from django.utils.translation import gettext_lazy as _
 
 MODULE_ID = 'assistant'
 MODULE_NAME = _('AI Assistant')
+MODULE_DESCRIPTION = _(
+    'AI-powered business assistant with contextual tools for inventory, sales, '
+    'customers, invoicing, and more. Supports voice input and tiered subscription '
+    'plans (Basic, Pro, Enterprise) with different AI models and usage limits.'
+)
 MODULE_VERSION = '1.0.0'
+MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
+MODULE_FUNCTIONS = ['utility', 'ai']
+MODULE_COLOR = '#7c3aed'
+
+PRICING = {
+    'type': 'subscription',
+    'subscription_price_monthly': 5.00,
+}
+
+COMPATIBILITY = {
+    'min_erplora_version': '1.0.0',
+}
 
 MENU = {
     'label': _('AI Assistant'),
