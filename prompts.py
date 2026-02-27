@@ -31,17 +31,17 @@ def build_system_prompt(request, context='general'):
     user_name = request.session.get('user_name', 'User')
     user_role = request.session.get('user_role', 'employee')
 
-    # Get active modules
+    # Get active modules with descriptions
     loader = ModuleLoader()
     menu_items = loader.get_menu_items()
-    module_names = [str(item.get('label', item.get('module_id', ''))) for item in menu_items]
+    module_entries = _collect_module_info(menu_items)
 
     # Build prompt parts
     parts = [
         _base_instructions(hub_config.language),
         _user_context(user_name, user_role),
         _store_context(store_config, hub_config),
-        _modules_context(module_names),
+        _modules_context(module_entries),
     ]
 
     if context == 'setup':
@@ -63,7 +63,17 @@ You help users configure their hub, manage products, employees, and business ope
 
 IMPORTANT: Always respond in {lang_name} (the user's configured language).
 Be concise, helpful, and proactive. Suggest next steps when appropriate.
-When you need to perform an action, use the available tools."""
+When you need to perform an action, use the available tools.
+
+## Module Recommendations
+When a user describes their business or asks which modules they need:
+1. Use the `get_module_catalog` tool to fetch ALL available modules with descriptions, functions, and industries
+2. Based on the user's business type, recommend the most relevant modules
+3. Indicate which modules are already installed vs need to be added
+4. Mention dependencies (if module A requires module B)
+5. Explain pricing: free modules can be installed directly, paid modules need to be purchased from the marketplace
+
+You can also use `list_available_blocks` to see functional blocks (pre-configured bundles of modules for common business types like retail, hospitality, services, etc.)."""
 
 
 def _user_context(user_name, user_role):
@@ -87,13 +97,41 @@ def _store_context(store_config, hub_config):
     return parts[0]
 
 
-def _modules_context(module_names):
-    if not module_names:
-        return "## Active Modules\nNo modules installed yet."
+def _collect_module_info(menu_items):
+    """Collect module IDs, names, and descriptions from module.py files."""
+    import importlib
+    entries = []
+    for item in menu_items:
+        mid = item.get('module_id', '')
+        label = str(item.get('label', mid))
+        desc = ''
+        try:
+            mod = importlib.import_module(f"{mid}.module")
+            d = getattr(mod, 'MODULE_DESCRIPTION', None)
+            if d:
+                desc = str(d)
+        except Exception:
+            pass
+        entries.append((mid, label, desc))
+    return entries
 
-    modules_list = ', '.join(module_names)
-    return f"""## Active Modules ({len(module_names)} installed)
-{modules_list}"""
+
+def _modules_context(module_entries):
+    if not module_entries:
+        return """## Active Modules
+No modules installed yet. Use `get_module_catalog` to browse available modules."""
+
+    lines = []
+    for mid, label, desc in module_entries:
+        if desc:
+            lines.append(f"- **{label}** ({mid}): {desc}")
+        else:
+            lines.append(f"- **{label}** ({mid})")
+
+    return f"""## Active Modules ({len(module_entries)} installed)
+{chr(10).join(lines)}
+
+Use `get_module_catalog` to see all available modules (including those not yet installed)."""
 
 
 def _setup_context(hub_config, store_config):

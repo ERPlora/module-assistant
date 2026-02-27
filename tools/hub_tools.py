@@ -127,7 +127,7 @@ class GetSelectedBlocks(AssistantTool):
 @register_tool
 class ListModules(AssistantTool):
     name = "list_modules"
-    description = "List all installed and active modules on this hub"
+    description = "List all installed and active modules on this hub, including what each module does"
     parameters = {
         "type": "object",
         "properties": {},
@@ -136,20 +136,117 @@ class ListModules(AssistantTool):
     }
 
     def execute(self, args, request):
+        import importlib
         from apps.modules_runtime.loader import ModuleLoader
         loader = ModuleLoader()
         menu_items = loader.get_menu_items()
-        return {
-            "modules": [
-                {
-                    "module_id": item.get("module_id", ""),
-                    "label": str(item.get("label", "")),
-                    "icon": item.get("icon", ""),
+        modules = []
+        for item in menu_items:
+            mid = item.get("module_id", "")
+            entry = {
+                "module_id": mid,
+                "label": str(item.get("label", "")),
+                "icon": item.get("icon", ""),
+            }
+            # Try to get description and navigation from module.py
+            try:
+                mod = importlib.import_module(f"{mid}.module")
+                desc = getattr(mod, 'MODULE_DESCRIPTION', None)
+                if desc:
+                    entry["description"] = str(desc)
+                nav = getattr(mod, 'NAVIGATION', [])
+                if nav:
+                    entry["pages"] = [str(n.get('label', '')) for n in nav]
+            except Exception:
+                pass
+            modules.append(entry)
+        return {"modules": modules, "total": len(modules)}
+
+
+@register_tool
+class GetModuleCatalog(AssistantTool):
+    name = "get_module_catalog"
+    description = (
+        "Get the full module catalog from the Cloud marketplace. "
+        "Returns ALL available modules with descriptions, business functions, "
+        "industries, pricing, and dependencies. Use this tool when the user "
+        "asks what modules to install for their business type, or wants to "
+        "know what modules are available and what they do."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "business_type": {
+                "type": "string",
+                "description": "Optional: filter description for the user's business type (e.g., 'restaurant', 'retail', 'clinic'). If provided, the AI should use this to prioritize recommendations from the results.",
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        import requests as http_requests
+        from pathlib import Path
+        from django.conf import settings
+
+        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
+
+        # Get installed module IDs
+        modules_dir = Path(settings.MODULES_DIR)
+        installed_ids = set()
+        if modules_dir.exists():
+            for d in modules_dir.iterdir():
+                if d.is_dir() and not d.name.startswith('.'):
+                    installed_ids.add(d.name.lstrip('_'))
+
+        # Fetch Hub token for authenticated requests (is_owned field)
+        from apps.configuration.models import HubConfig
+        hub_config = HubConfig.get_solo()
+        auth_token = hub_config.hub_jwt or hub_config.cloud_api_token
+        headers = {'Accept': 'application/json'}
+        if auth_token:
+            headers['X-Hub-Token'] = auth_token
+
+        try:
+            resp = http_requests.get(
+                f"{base_url}/api/marketplace/modules/",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return {"error": f"Cloud API returned {resp.status_code}"}
+
+            data = resp.json()
+            modules_list = data.get('results', data) if isinstance(data, dict) else data
+            if not isinstance(modules_list, list):
+                return {"error": "Unexpected API response format"}
+
+            catalog = []
+            for m in modules_list:
+                mid = m.get('module_id', '')
+                entry = {
+                    "module_id": mid,
+                    "name": m.get('name', ''),
+                    "description": m.get('description', ''),
+                    "functions": m.get('functions_names', []),
+                    "industries": m.get('industries', []),
+                    "module_type": m.get('module_type', ''),
+                    "price": str(m.get('price', 0)),
+                    "is_installed": mid in installed_ids or m.get('slug', '') in installed_ids,
+                    "is_owned": m.get('is_owned', False),
+                    "dependency_ids": m.get('dependency_ids', []),
                 }
-                for item in menu_items
-            ],
-            "total": len(menu_items),
-        }
+                catalog.append(entry)
+
+            return {
+                "modules": catalog,
+                "total": len(catalog),
+                "installed_count": sum(1 for c in catalog if c['is_installed']),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to fetch catalog: {str(e)}"}
 
 
 @register_tool
