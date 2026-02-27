@@ -21,44 +21,21 @@
 
     <!-- Input area -->
     <div class="p-4 border-t border-base-200">
-        <form id="chat-form"
-              hx-post="{% url 'assistant:chat_message' %}"
-              hx-target="#chat-messages"
-              hx-swap="beforeend"
-              hx-indicator="#chat-loading"
-              hx-disabled-elt="#chat-submit, #chat-input, #chat-mic"
-              hx-on::before-request="
-                  var input = document.getElementById('chat-input');
-                  var msg = input.value.trim();
-                  if (!msg) { event.preventDefault(); return; }
-                  var msgs = document.getElementById('chat-messages');
-                  var bubble = document.createElement('div');
-                  bubble.className = 'chat-message chat-user';
-                  bubble.innerHTML = '<div class=\'chat-bubble\'>' + msg.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
-                  msgs.appendChild(bubble);
-                  var typing = document.createElement('div');
-                  typing.id = 'typing-indicator';
-                  typing.className = 'chat-message chat-assistant';
-                  typing.innerHTML = '<div class=&quot;chat-typing&quot;><span class=&quot;chat-typing-dot&quot;></span><span class=&quot;chat-typing-dot&quot;></span><span class=&quot;chat-typing-dot&quot;></span></div>';
-                  msgs.appendChild(typing);
-                  msgs.scrollTop = msgs.scrollHeight;
-                  input.value = '';
-                  input.style.height = 'auto';
-              "
-              hx-on::after-request="
-                  var typing = document.getElementById('typing-indicator');
-                  if (typing) typing.remove();
-                  var msgs = document.getElementById('chat-messages');
-                  msgs.scrollTop = msgs.scrollHeight;
-                  var xhr = event.detail.xhr;
-                  if (xhr) {
-                      var convId = xhr.getResponseHeader('X-Conversation-Id');
-                      if (convId) document.getElementById('conv-id').value = convId;
-                  }
-              ">
+        <form id="chat-form" onsubmit="event.preventDefault(); submitChat();">
             {% csrf_token %}
             <input type="hidden" name="conversation_id" id="conv-id" value="">
             <input type="hidden" name="context" value="{{ context|default:'general' }}">
+
+            <!-- File preview -->
+            <div id="file-preview" class="hidden mb-2 p-2 rounded-lg bg-base-200 flex items-center gap-2">
+                <img id="file-preview-img" class="hidden h-12 w-12 object-cover rounded" src="" alt="">
+                <span id="file-preview-icon" class="hidden text-xl">{% icon "document-outline" %}</span>
+                <span id="file-preview-name" class="text-sm flex-1 truncate"></span>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="clearFileAttachment()" title="{% trans 'Remove' %}">&times;</button>
+            </div>
+
+            <input type="file" id="chat-file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden
+                   onchange="handleFileSelect(this)">
 
             <div class="flex gap-2 items-end">
                 <textarea
@@ -67,9 +44,16 @@
                     class="input flex-1"
                     rows="1"
                     placeholder="{% trans 'Type a message...' %}"
-                    onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); document.getElementById('chat-form').requestSubmit();}"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); submitChat();}"
                     oninput="this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,120)+'px';"
                     style="resize: none; max-height: 120px;"></textarea>
+                <button type="button"
+                        id="chat-attach"
+                        class="btn btn-ghost"
+                        onclick="document.getElementById('chat-file').click()"
+                        title="{% trans 'Attach file' %}">
+                    {% icon "attach-outline" %}
+                </button>
                 <button type="button"
                         id="chat-mic"
                         class="btn btn-ghost"
@@ -77,10 +61,11 @@
                         title="{% trans 'Voice input' %}">
                     {% icon "mic-outline" %}
                 </button>
-                <button type="submit"
+                <button type="button"
                         id="chat-submit"
-                        class="btn color-primary">
-                    <span id="chat-loading" class="loading loading-sm htmx-indicator"></span>
+                        class="btn color-primary"
+                        onclick="submitChat()">
+                    <span id="chat-loading" class="loading loading-sm" style="display:none;"></span>
                     <span class="when-not-loading">{% icon "send-outline" %}</span>
                 </button>
             </div>
@@ -89,11 +74,6 @@
 </div>
 
 <style>
-    #chat-submit .when-not-loading { display: inline; }
-    #chat-submit.htmx-request .when-not-loading { display: none; }
-    #chat-loading { display: none; }
-    #chat-submit.htmx-request #chat-loading,
-    .htmx-request #chat-loading { display: inline-block; }
     .chat-bubble.prose { max-width: none; }
     .chat-bubble.prose ul { list-style: disc; padding-left: 1.5em; }
     .chat-bubble.prose ol { list-style: decimal; padding-left: 1.5em; }
@@ -116,9 +96,158 @@
         0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
         40% { transform: scale(1); opacity: 1; }
     }
+    #chat-submit.is-loading .when-not-loading { display: none; }
+    #chat-submit.is-loading #chat-loading { display: inline-block !important; }
+    #file-preview-img.active { display: block; }
+    #file-preview-icon.active { display: inline; }
 </style>
 
 <script>
+var _chatFileData = null;
+
+function handleFileSelect(input) {
+    var file = input.files[0];
+    if (!file) return;
+
+    var maxSize = 10 * 1024 * 1024;
+    if (file.size > maxSize) {
+        alert('File too large. Maximum size is 10 MB.');
+        input.value = '';
+        return;
+    }
+
+    var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    if (allowed.indexOf(file.type) === -1) {
+        alert('Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.');
+        input.value = '';
+        return;
+    }
+
+    _chatFileData = file;
+    var preview = document.getElementById('file-preview');
+    var previewImg = document.getElementById('file-preview-img');
+    var previewIcon = document.getElementById('file-preview-icon');
+    var previewName = document.getElementById('file-preview-name');
+
+    previewName.textContent = file.name;
+    preview.classList.remove('hidden');
+
+    if (file.type.startsWith('image/')) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            previewImg.src = e.target.result;
+            previewImg.classList.remove('hidden');
+            previewImg.classList.add('active');
+        };
+        reader.readAsDataURL(file);
+        previewIcon.classList.add('hidden');
+        previewIcon.classList.remove('active');
+    } else {
+        previewImg.classList.add('hidden');
+        previewImg.classList.remove('active');
+        previewIcon.classList.remove('hidden');
+        previewIcon.classList.add('active');
+    }
+}
+
+function clearFileAttachment() {
+    _chatFileData = null;
+    var fileInput = document.getElementById('chat-file');
+    fileInput.value = '';
+    document.getElementById('file-preview').classList.add('hidden');
+    document.getElementById('file-preview-img').classList.add('hidden');
+    document.getElementById('file-preview-img').classList.remove('active');
+    document.getElementById('file-preview-icon').classList.add('hidden');
+    document.getElementById('file-preview-icon').classList.remove('active');
+}
+
+function submitChat() {
+    var input = document.getElementById('chat-input');
+    var msg = input.value.trim();
+    if (!msg && !_chatFileData) return;
+
+    var msgs = document.getElementById('chat-messages');
+    var submitBtn = document.getElementById('chat-submit');
+
+    // Show user bubble
+    var bubbleHtml = '';
+    if (_chatFileData && _chatFileData.type.startsWith('image/')) {
+        var previewImg = document.getElementById('file-preview-img');
+        bubbleHtml += '<img src="' + previewImg.src + '" class="max-h-32 rounded mb-2" alt="Attached">';
+    } else if (_chatFileData) {
+        bubbleHtml += '<div class="text-sm opacity-75 mb-1">📄 ' + _chatFileData.name + '</div>';
+    }
+    if (msg) {
+        bubbleHtml += msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    var bubble = document.createElement('div');
+    bubble.className = 'chat-message chat-user';
+    bubble.innerHTML = '<div class="chat-bubble">' + bubbleHtml + '</div>';
+    msgs.appendChild(bubble);
+
+    // Typing indicator
+    var typing = document.createElement('div');
+    typing.id = 'typing-indicator';
+    typing.className = 'chat-message chat-assistant';
+    typing.innerHTML = '<div class="chat-typing"><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span></div>';
+    msgs.appendChild(typing);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    // Disable UI
+    input.disabled = true;
+    submitBtn.disabled = true;
+    submitBtn.classList.add('is-loading');
+
+    // Build FormData
+    var formData = new FormData();
+    formData.append('message', msg);
+    formData.append('conversation_id', document.getElementById('conv-id').value);
+    formData.append('context', '{{ context|default:"general" }}');
+    formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
+    if (_chatFileData) {
+        formData.append('file', _chatFileData);
+    }
+
+    // Clear input
+    input.value = '';
+    input.style.height = 'auto';
+    clearFileAttachment();
+
+    fetch('{% url "assistant:chat_message" %}', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'HX-Request': 'true',
+        },
+    })
+    .then(function(response) {
+        var convId = response.headers.get('X-Conversation-Id');
+        if (convId) document.getElementById('conv-id').value = convId;
+        return response.text();
+    })
+    .then(function(html) {
+        var t = document.getElementById('typing-indicator');
+        if (t) t.remove();
+        msgs.insertAdjacentHTML('beforeend', html);
+        msgs.scrollTop = msgs.scrollHeight;
+        // Process any htmx content in the response
+        if (window.htmx) htmx.process(msgs.lastElementChild);
+    })
+    .catch(function(err) {
+        var t = document.getElementById('typing-indicator');
+        if (t) t.remove();
+        msgs.insertAdjacentHTML('beforeend',
+            '<div class="chat-message chat-assistant"><div class="chat-bubble">Error: Could not reach AI service.</div></div>');
+        msgs.scrollTop = msgs.scrollHeight;
+    })
+    .finally(function() {
+        input.disabled = false;
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('is-loading');
+        input.focus();
+    });
+}
+
 function toggleVoiceInput(btn) {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;

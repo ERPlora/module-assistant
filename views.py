@@ -4,6 +4,7 @@ AI Assistant Views.
 Handles chat page rendering, message processing with agentic loop,
 and action confirmation.
 """
+import base64
 import json
 import logging
 
@@ -94,8 +95,9 @@ def chat(request):
     message = request.POST.get('message', '').strip()
     conversation_id = request.POST.get('conversation_id', '')
     context = request.POST.get('context', 'general')
+    uploaded_file = request.FILES.get('file')
 
-    if not message:
+    if not message and not uploaded_file:
         return HttpResponse(
             render_to_string('assistant/partials/message.html', {
                 'role': 'assistant',
@@ -119,8 +121,32 @@ def chat(request):
     instructions = build_system_prompt(request, context)
     tools = get_tools_for_context(context, user)
 
-    # Build input for OpenAI
+    # Build input for OpenAI (text or multimodal)
     openai_input = message
+
+    if uploaded_file:
+        # Validate file size (10 MB max)
+        if uploaded_file.size > 10 * 1024 * 1024:
+            return _error_response("File too large. Maximum size is 10 MB.", request)
+
+        mime_type = uploaded_file.content_type or ''
+        image_types = ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+
+        if mime_type in image_types:
+            # Image: convert to base64 data URL
+            file_bytes = uploaded_file.read()
+            b64 = base64.b64encode(file_bytes).decode('utf-8')
+            openai_input = [
+                {"type": "input_text", "text": message or "Describe this image."},
+                {"type": "input_image", "image_url": f"data:{mime_type};base64,{b64}"},
+            ]
+        elif mime_type == 'application/pdf':
+            openai_input = _process_pdf_upload(uploaded_file, message)
+        else:
+            return _error_response(
+                "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.",
+                request,
+            )
 
     # If we have a previous response_id, OpenAI will continue that conversation
     previous_response_id = conversation.openai_response_id or None
@@ -536,6 +562,53 @@ def _error_response(message, request):
     }, request=request))
 
 
+def _process_pdf_upload(uploaded_file, message):
+    """
+    Process a PDF upload into multimodal input for OpenAI.
+
+    Tries PyMuPDF (fitz) to render pages as images.
+    Falls back to text extraction if PyMuPDF is not installed.
+    """
+    file_bytes = uploaded_file.read()
+    text_prompt = message or "Analyze this document."
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        input_parts = [{"type": "input_text", "text": text_prompt}]
+
+        # Render up to 10 pages as images
+        for page_num in range(min(len(doc), 10)):
+            page = doc[page_num]
+            # Render at 150 DPI for good quality without being too large
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            b64 = base64.b64encode(img_bytes).decode('utf-8')
+            input_parts.append({
+                "type": "input_image",
+                "image_url": f"data:image/png;base64,{b64}",
+            })
+
+        doc.close()
+        return input_parts
+
+    except ImportError:
+        logger.info("[ASSISTANT] PyMuPDF not installed, falling back to text hint")
+        return (
+            f"{text_prompt}\n\n[A PDF file was attached but could not be "
+            f"processed as images. Please install PyMuPDF (`pip install PyMuPDF`) "
+            f"for full PDF support, or upload an image/photo instead.]"
+        )
+
+    except Exception as e:
+        logger.error(f"[ASSISTANT] PDF processing error: {e}", exc_info=True)
+        return (
+            f"{text_prompt}\n\n[Error processing PDF: {str(e)}. "
+            f"Please try uploading an image instead.]"
+        )
+
+
 def _format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
@@ -556,6 +629,7 @@ def _format_confirmation_text(tool_name, tool_args):
         'update_product': lambda args: f"Update product: {args.get('product_id', '')}",
         'create_category': lambda args: f"Create category: {args.get('name', '')}",
         'adjust_stock': lambda args: f"Adjust stock: {args.get('quantity', '')} units for product {args.get('product_id', '')}",
+        'bulk_adjust_stock': lambda args: f"Bulk adjust stock ({len(args.get('items', []))} products): {args.get('reason', '')}",
         # Customers
         'create_customer': lambda args: f"Create customer: {args.get('name', '')}",
         'update_customer': lambda args: f"Update customer: {args.get('customer_id', '')}",
