@@ -111,14 +111,14 @@ function handleFileSelect(input) {
 
     var maxSize = 10 * 1024 * 1024;
     if (file.size > maxSize) {
-        alert('File too large. Maximum size is 10 MB.');
+        showToast('{% trans "File too large. Maximum size is 10 MB." %}', 'warning');
         input.value = '';
         return;
     }
 
     var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
     if (allowed.indexOf(file.type) === -1) {
-        alert('Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.');
+        showToast('{% trans "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF." %}', 'warning');
         input.value = '';
         return;
     }
