@@ -10,6 +10,10 @@ class AssistantConversation(models.Model):
     )
     openai_response_id = models.CharField(max_length=255, blank=True, default='')
     context = models.CharField(max_length=50, default='general')
+    title = models.CharField(max_length=200, blank=True, default='')
+    summary = models.TextField(blank=True, default='')
+    first_message = models.TextField(blank=True, default='')
+    message_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

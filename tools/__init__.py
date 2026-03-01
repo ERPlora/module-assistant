@@ -24,16 +24,25 @@ class AssistantTool:
     requires_confirmation: bool = False
     required_permission: str = None
     setup_only: bool = False
+    examples: list = []
 
     def execute(self, args: dict, request) -> dict:
         raise NotImplementedError(f"Tool {self.name} must implement execute()")
 
     def to_openai_schema(self) -> dict:
         """Convert tool to OpenAI function calling schema."""
+        desc = self.description
+        if self.examples:
+            import json
+            examples_text = '\n'.join(
+                f"  {json.dumps(ex, ensure_ascii=False)}"
+                for ex in self.examples
+            )
+            desc += f"\n\nExamples:\n{examples_text}"
         return {
             'type': 'function',
             'name': self.name,
-            'description': self.description,
+            'description': desc,
             'parameters': self.parameters,
         }
 
@@ -78,6 +87,7 @@ def discover_tools():
         from assistant.tools import hub_tools  # noqa: F401
         from assistant.tools import setup_tools  # noqa: F401
         from assistant.tools import configure_tools  # noqa: F401
+        from assistant.tools import analytics_tools  # noqa: F401
     except ImportError as e:
         logger.error(f"[ASSISTANT] Failed to load core tools: {e}")
 

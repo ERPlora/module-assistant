@@ -102,8 +102,16 @@
     #file-preview-icon.active { display: inline; }
 </style>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 var _chatFileData = null;
+
+// Auto-scroll when HTMX swaps content (polling progress updates)
+document.addEventListener('htmx:afterSwap', function(event) {
+    var msgs = document.getElementById('chat-messages');
+    if (msgs && msgs.contains(event.detail.target)) {
+        msgs.scrollTop = msgs.scrollHeight;
+    }
+});
 
 function handleFileSelect(input) {
     var file = input.files[0];
@@ -230,8 +238,16 @@ function submitChat() {
         if (t) t.remove();
         msgs.insertAdjacentHTML('beforeend', html);
         msgs.scrollTop = msgs.scrollHeight;
-        // Process any htmx content in the response
-        if (window.htmx) htmx.process(msgs.lastElementChild);
+        // Process HTMX content (polling partials) in the response
+        if (window.htmx) {
+            var lastChild = msgs.lastElementChild;
+            htmx.process(lastChild);
+        }
+        // Re-enable input
+        input.disabled = false;
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('is-loading');
+        input.focus();
     })
     .catch(function(err) {
         var t = document.getElementById('typing-indicator');
@@ -239,8 +255,6 @@ function submitChat() {
         msgs.insertAdjacentHTML('beforeend',
             '<div class="chat-message chat-assistant"><div class="chat-bubble">Error: Could not reach AI service.</div></div>');
         msgs.scrollTop = msgs.scrollHeight;
-    })
-    .finally(function() {
         input.disabled = false;
         submitBtn.disabled = false;
         submitBtn.classList.remove('is-loading');

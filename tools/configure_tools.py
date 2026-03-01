@@ -53,6 +53,10 @@ class ConfigureBusiness(AssistantTool):
         "After presenting the plan, use execute_plan to apply it."
     )
     requires_confirmation = False  # Read-only, just generates a plan
+    examples = [
+        {"business_description": "peluquería en Madrid", "business_type": "hair_salon", "country_code": "ES", "city": "Madrid"},
+        {"business_description": "restaurant in Berlin", "business_type": "restaurant", "country_code": "DE", "city": "Berlin"},
+    ]
     parameters = {
         "type": "object",
         "properties": {
@@ -275,6 +279,15 @@ class ExecutePlan(AssistantTool):
     )
     requires_confirmation = True  # Single confirmation for ALL steps
     required_permission = "assistant.use_setup_mode"
+    examples = [
+        {"steps": [
+            {"action": "set_regional_config", "params": {"language": "es", "timezone": "Europe/Madrid", "country_code": "ES", "currency": "EUR"}},
+            {"action": "set_business_info", "params": {"business_name": "Salón María", "business_address": "C/ Gran Vía 10, Madrid"}},
+            {"action": "set_tax_config", "params": {"tax_rate": 21.0, "tax_included": True}},
+            {"action": "create_service_category", "params": {"name": "Cortes"}},
+            {"action": "create_service", "params": {"name": "Corte + Peinado", "price": 25, "duration_minutes": 45, "category": "Cortes"}},
+        ]},
+    ]
     parameters = {
         "type": "object",
         "properties": {

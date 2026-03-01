@@ -11,6 +11,7 @@ urlpatterns = [
 
     # API (POST)
     path('chat/', views.chat, name='chat_message'),
+    path('poll/<str:request_id>/', views.poll_progress, name='poll_progress'),
     path('confirm/<int:log_id>/', views.confirm_action, name='confirm_action'),
     path('cancel/<int:log_id>/', views.cancel_action, name='cancel_action'),
 ]

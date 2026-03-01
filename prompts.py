@@ -3,11 +3,22 @@ System prompt builder for the AI Assistant.
 
 Builds a dynamic system prompt per request including:
 - User info (name, role, permissions)
-- Store info (name, currency, language)
-- Active modules
+- Store info (name, currency, language, tax)
+- Current date/time/timezone
+- Active modules with their available tools
+- Data overview (counts of products, customers, sales, etc.)
+- Configured roles and tax classes
+- Payment methods
+- Recent activity from action logs
+- Conversation history summaries
 - Setup state (if in setup context)
 - Safety rules
 """
+import logging
+
+from django.core.cache import cache
+
+logger = logging.getLogger(__name__)
 
 
 def build_system_prompt(request, context='general'):
@@ -27,7 +38,7 @@ def build_system_prompt(request, context='general'):
     hub_config = HubConfig.get_solo()
     store_config = StoreConfig.get_solo()
 
-    # Get user info from session
+    user_id = request.session.get('local_user_id')
     user_name = request.session.get('user_name', 'User')
     user_role = request.session.get('user_role', 'employee')
 
@@ -41,7 +52,15 @@ def build_system_prompt(request, context='general'):
         _base_instructions(hub_config.language),
         _user_context(user_name, user_role),
         _store_context(store_config, hub_config),
+        _datetime_context(hub_config),
         _modules_context(module_entries),
+        _tools_context(context, request),
+        _data_overview(),
+        _roles_context(request),
+        _tax_context(),
+        _payment_context(),
+        _recent_activity(user_id),
+        _conversation_history(user_id),
     ]
 
     if context == 'setup':
@@ -49,7 +68,8 @@ def build_system_prompt(request, context='general'):
 
     parts.append(_safety_rules())
 
-    return '\n\n'.join(parts)
+    # Filter out empty parts
+    return '\n\n'.join(p for p in parts if p)
 
 
 def _base_instructions(language):
@@ -97,6 +117,23 @@ def _store_context(store_config, hub_config):
     return parts[0]
 
 
+def _datetime_context(hub_config):
+    """Current date, time, and timezone."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(hub_config.timezone or 'UTC')
+    except Exception:
+        import pytz
+        tz = pytz.timezone(hub_config.timezone or 'UTC')
+
+    now = datetime.now(tz)
+    day_name = now.strftime('%A')
+
+    return f"""## Current Date/Time
+{now.strftime('%Y-%m-%d %H:%M')} ({hub_config.timezone or 'UTC'}, {day_name})"""
+
+
 def _collect_module_info(menu_items):
     """Collect module IDs, names, and descriptions from module.py files."""
     import importlib
@@ -132,6 +169,227 @@ No modules installed yet. Use `get_module_catalog` to browse available modules."
 {chr(10).join(lines)}
 
 Use `get_module_catalog` to see all available modules (including those not yet installed)."""
+
+
+def _tools_context(context, request):
+    """Summarize available tools grouped by module."""
+    try:
+        from assistant.tools import get_tools_for_context, TOOL_REGISTRY
+        from apps.accounts.models import LocalUser
+
+        user_id = request.session.get('local_user_id')
+        user = None
+        if user_id:
+            try:
+                user = LocalUser.objects.get(id=user_id)
+            except LocalUser.DoesNotExist:
+                pass
+
+        tools = get_tools_for_context(context, user)
+        if not tools:
+            return ''
+
+        # Group by module using the registry
+        by_module = {}
+        for schema in tools:
+            tool_name = schema.get('name', '')
+            tool_inst = TOOL_REGISTRY.get(tool_name)
+            mod = getattr(tool_inst, 'module_id', None) or 'hub_core'
+            by_module.setdefault(mod, []).append(tool_inst)
+
+        lines = [f"## Available Tools ({len(tools)} total)"]
+        for mod in sorted(by_module.keys()):
+            mod_tools = by_module[mod]
+            names = []
+            for t in mod_tools:
+                suffix = ' (write)' if t.requires_confirmation else ''
+                names.append(f"{t.name}{suffix}")
+            lines.append(f"- **{mod}**: {', '.join(names)}")
+
+        return '\n'.join(lines)
+    except Exception as e:
+        logger.debug(f"[ASSISTANT] Error building tools context: {e}")
+        return ''
+
+
+def _data_overview():
+    """Quick aggregate counts from active modules."""
+    counts = {}
+
+    try:
+        from inventory.models import Product
+        counts['products'] = Product.objects.filter(is_active=True).count()
+    except Exception:
+        pass
+
+    try:
+        from customers.models import Customer
+        counts['customers'] = Customer.objects.filter(is_active=True).count()
+    except Exception:
+        pass
+
+    try:
+        from services.models import Service
+        counts['services'] = Service.objects.filter(is_active=True).count()
+    except Exception:
+        pass
+
+    try:
+        from sales.models import Sale
+        from datetime import date
+        today = date.today()
+        counts['sales_today'] = Sale.objects.filter(
+            status='completed', created_at__date=today,
+        ).count()
+        counts['sales_this_month'] = Sale.objects.filter(
+            status='completed', created_at__date__gte=today.replace(day=1),
+        ).count()
+    except Exception:
+        pass
+
+    try:
+        from apps.accounts.models import LocalUser
+        counts['employees'] = LocalUser.objects.filter(
+            is_active=True, is_deleted=False,
+        ).count()
+    except Exception:
+        pass
+
+    if not counts:
+        return ''
+
+    lines = ['## Data Overview']
+    for key, val in counts.items():
+        label = key.replace('_', ' ').title()
+        lines.append(f"- {label}: {val}")
+
+    return '\n'.join(lines)
+
+
+def _roles_context(request):
+    """List configured roles."""
+    try:
+        from apps.accounts.models import Role
+        hub_id = request.session.get('hub_id')
+        roles = Role.objects.filter(
+            hub_id=hub_id, is_active=True, is_deleted=False,
+        ).order_by('source', 'name')
+
+        if not roles.exists():
+            return ''
+
+        role_parts = []
+        for r in roles:
+            role_parts.append(f"{r.name} ({r.source})")
+
+        return f"## Configured Roles\n{', '.join(role_parts)}"
+    except Exception:
+        return ''
+
+
+def _tax_context():
+    """List configured tax classes."""
+    try:
+        from apps.configuration.models import TaxClass
+        classes = TaxClass.objects.all().order_by('-is_default', 'name')
+
+        if not classes.exists():
+            return ''
+
+        parts = []
+        for tc in classes:
+            default = ' (default)' if tc.is_default else ''
+            parts.append(f"{tc.name} {tc.rate}%{default}")
+
+        return f"## Tax Classes\n{', '.join(parts)}"
+    except Exception:
+        return ''
+
+
+def _payment_context():
+    """List configured payment methods."""
+    try:
+        from sales.models import PaymentMethod
+        methods = PaymentMethod.objects.filter(is_active=True).order_by('sort_order')
+
+        if not methods.exists():
+            return ''
+
+        parts = []
+        for pm in methods:
+            parts.append(f"{pm.name} ({pm.type})")
+
+        return f"## Payment Methods\n{', '.join(parts)}"
+    except Exception:
+        return ''
+
+
+def _recent_activity(user_id):
+    """Last 5 meaningful tool actions for this user."""
+    if not user_id:
+        return ''
+
+    try:
+        from assistant.models import AssistantActionLog
+
+        # Skip read-only discovery tools
+        skip_tools = {
+            'get_hub_config', 'get_store_config', 'list_modules',
+            'list_available_blocks', 'get_selected_blocks', 'list_roles',
+            'list_tax_classes', 'list_employees', 'get_module_catalog',
+        }
+
+        recent = AssistantActionLog.objects.filter(
+            user_id=user_id, success=True,
+        ).order_by('-created_at')[:20]
+
+        actions = []
+        for log in recent:
+            if log.tool_name in skip_tools:
+                continue
+            # Build a concise description
+            key_arg = ''
+            for k in ('name', 'title', 'business_name', 'module_id', 'query'):
+                val = log.tool_args.get(k)
+                if val:
+                    key_arg = f" '{val}'"
+                    break
+            actions.append(f"{log.tool_name}{key_arg}")
+            if len(actions) >= 5:
+                break
+
+        if not actions:
+            return ''
+
+        return f"## Recent Activity\n{', '.join(actions)}"
+    except Exception:
+        return ''
+
+
+def _conversation_history(user_id):
+    """Include recent conversation summaries for contextual continuity."""
+    if not user_id:
+        return ''
+
+    try:
+        from assistant.models import AssistantConversation
+        recent = AssistantConversation.objects.filter(
+            user_id=user_id,
+        ).exclude(summary='').exclude(summary__isnull=True).order_by('-updated_at')[:5]
+
+        if not recent:
+            return ''
+
+        lines = ['## Recent Conversations']
+        for conv in recent:
+            date_str = conv.updated_at.strftime('%Y-%m-%d %H:%M')
+            title = conv.title or conv.first_message[:50] if hasattr(conv, 'first_message') and conv.first_message else 'Untitled'
+            summary = conv.summary[:150] if conv.summary else ''
+            lines.append(f"- [{date_str}] {title}: {summary}")
+
+        return '\n'.join(lines)
+    except Exception:
+        return ''
 
 
 def _setup_context(hub_config, store_config):

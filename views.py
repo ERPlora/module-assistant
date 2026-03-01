@@ -2,12 +2,15 @@
 AI Assistant Views.
 
 Handles chat page rendering, message processing with agentic loop,
-and action confirmation.
+and action confirmation. Supports HTMX polling for streaming progress.
 """
 import base64
 import json
 import logging
+import threading
+import uuid
 
+from django.core.cache import cache
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.views.decorators.http import require_POST
@@ -23,6 +26,7 @@ from .tools import get_tools_for_context, get_tool
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 10
+PROGRESS_CACHE_TIMEOUT = 120  # seconds
 
 
 # ============================================================================
@@ -91,7 +95,18 @@ class AgenticLoopError(Exception):
     pass
 
 
-def run_agentic_loop(user, conversation, openai_input, context, request):
+def _set_progress(request_id, event_type, data=''):
+    """Update progress for a polling request."""
+    if request_id:
+        cache.set(
+            f'assistant_progress_{request_id}',
+            {'type': event_type, 'data': data},
+            timeout=PROGRESS_CACHE_TIMEOUT,
+        )
+
+
+def run_agentic_loop(user, conversation, openai_input, context, request,
+                     request_id=None):
     """
     Run the agentic tool-calling loop.
 
@@ -103,6 +118,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request):
         openai_input: str or list (text message or multimodal input)
         context: 'general' or 'setup'
         request: Django request (for session, building prompts)
+        request_id: optional ID for progress tracking via polling
 
     Returns:
         dict with keys:
@@ -121,6 +137,8 @@ def run_agentic_loop(user, conversation, openai_input, context, request):
     response_text = ""
     pending_actions = []
     tier_info = None
+
+    _set_progress(request_id, 'thinking', 'Analyzing your request...')
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
@@ -196,6 +214,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request):
             except json.JSONDecodeError:
                 tool_args = {}
 
+            _set_progress(request_id, 'tool', f'Using {tool_name}...')
             tool = get_tool(tool_name)
             if not tool:
                 tool_results.append({
@@ -391,44 +410,117 @@ def chat(request):
                 request,
             )
 
-    # Run the agentic loop
-    try:
-        result = run_agentic_loop(user, conversation, openai_input, context, request)
-    except AgenticLoopError as e:
-        return _error_response(str(e), request)
+    # Track conversation memory
+    _track_conversation_message(conversation, message)
 
-    # Build response HTML
-    html_parts = []
+    # Generate a request_id for progress tracking
+    request_id = uuid.uuid4().hex[:16]
 
-    if result['response_text']:
-        import markdown as md
-        rendered_content = md.markdown(
-            result['response_text'],
-            extensions=['tables', 'fenced_code', 'nl2br'],
-        )
-        html_parts.append(render_to_string('assistant/partials/message.html', {
-            'role': 'assistant',
-            'content': rendered_content,
-        }, request=request))
+    # Capture session data needed by the background thread
+    session_data = dict(request.session)
 
-    for action in result['pending_actions']:
-        html_parts.append(render_to_string('assistant/partials/confirmation.html', {
-            'log_id': action['log_id'],
-            'tool_name': action['tool_name'],
-            'tool_args': action['tool_args'],
-            'description': action['description'],
-        }, request=request))
+    def _background_task():
+        """Run the agentic loop in a background thread."""
+        from django.test import RequestFactory
+        # Create a minimal request object for the background thread
+        fake_request = RequestFactory().get('/')
+        fake_request.session = session_data
 
-    response = HttpResponse(''.join(html_parts))
-    response['X-Conversation-Id'] = str(result['conversation_id'])
-    if result['tier_info']:
-        response['X-Assistant-Tier'] = result['tier_info'].get('tier', '')
-        response['X-Assistant-Usage'] = json.dumps({
-            'sessions_used': result['tier_info'].get('sessions_used', 0),
-            'sessions_limit': result['tier_info'].get('sessions_limit', 0),
-            'tier_name': result['tier_info'].get('tier_name', ''),
-        })
+        try:
+            result = run_agentic_loop(
+                user, conversation, openai_input, context, fake_request,
+                request_id=request_id,
+            )
+            # Store the completed result
+            cache.set(f'assistant_result_{request_id}', result, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'complete', '')
+        except AgenticLoopError as e:
+            cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', str(e))
+        except Exception as e:
+            logger.error(f"[ASSISTANT] Background error: {e}", exc_info=True)
+            cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', str(e))
+
+    # Start background thread
+    thread = threading.Thread(target=_background_task, daemon=True)
+    thread.start()
+
+    # Return polling partial
+    html = render_to_string('assistant/partials/progress.html', {
+        'request_id': request_id,
+        'message': 'Analyzing your request...',
+    }, request=request)
+
+    response = HttpResponse(html)
+    response['X-Conversation-Id'] = str(conversation.id)
     return response
+
+
+@login_required
+@permission_required('assistant.use_chat')
+def poll_progress(request, request_id):
+    """
+    Poll for progress updates on a background chat request.
+    Returns progress partial (continues polling) or final response (stops polling).
+    """
+    progress = cache.get(f'assistant_progress_{request_id}')
+    if not progress:
+        progress = {'type': 'thinking', 'data': 'Processing...'}
+
+    if progress['type'] in ('complete', 'error'):
+        # Get the final result
+        result = cache.get(f'assistant_result_{request_id}')
+
+        # Clean up cache
+        cache.delete(f'assistant_progress_{request_id}')
+        cache.delete(f'assistant_result_{request_id}')
+
+        if not result or 'error' in result:
+            error_msg = (result or {}).get('error', 'Unknown error')
+            return HttpResponse(render_to_string('assistant/partials/message.html', {
+                'role': 'system',
+                'content': error_msg,
+                'error': True,
+            }, request=request))
+
+        # Build final response HTML
+        html_parts = []
+
+        if result.get('response_text'):
+            import markdown as md
+            rendered_content = md.markdown(
+                result['response_text'],
+                extensions=['tables', 'fenced_code', 'nl2br'],
+            )
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'assistant',
+                'content': rendered_content,
+            }, request=request))
+
+        for action in result.get('pending_actions', []):
+            html_parts.append(render_to_string('assistant/partials/confirmation.html', {
+                'log_id': action['log_id'],
+                'tool_name': action['tool_name'],
+                'tool_args': action['tool_args'],
+                'description': action['description'],
+            }, request=request))
+
+        resp = HttpResponse(''.join(html_parts))
+        if result.get('tier_info'):
+            resp['X-Assistant-Tier'] = result['tier_info'].get('tier', '')
+            resp['X-Assistant-Usage'] = json.dumps({
+                'sessions_used': result['tier_info'].get('sessions_used', 0),
+                'sessions_limit': result['tier_info'].get('sessions_limit', 0),
+                'tier_name': result['tier_info'].get('tier_name', ''),
+            })
+        return resp
+    else:
+        # Still processing — return progress partial that continues polling
+        return HttpResponse(render_to_string('assistant/partials/progress.html', {
+            'request_id': request_id,
+            'message': progress.get('data', 'Processing...'),
+        }, request=request))
 
 
 # ============================================================================
@@ -508,10 +600,66 @@ def _get_or_create_conversation(user_id, conversation_id, context):
         except (AssistantConversation.DoesNotExist, ValueError):
             pass
 
+    # Before creating a new conversation, summarize the previous one
+    _summarize_last_conversation(user_id)
+
     return AssistantConversation.objects.create(
         user_id=user_id,
         context=context,
     )
+
+
+def _track_conversation_message(conversation, message):
+    """Track message count and first message for conversation memory."""
+    update_fields = ['message_count', 'updated_at']
+    conversation.message_count += 1
+
+    if conversation.message_count == 1 and message:
+        conversation.first_message = message[:500]
+        conversation.title = message[:100]
+        update_fields.extend(['first_message', 'title'])
+
+    conversation.save(update_fields=update_fields)
+
+
+def _summarize_last_conversation(user_id):
+    """Auto-summarize the most recent conversation from its action logs."""
+    last = AssistantConversation.objects.filter(
+        user_id=user_id,
+        summary='',
+    ).order_by('-updated_at').first()
+
+    if not last:
+        return
+
+    skip_tools = {
+        'get_hub_config', 'get_store_config', 'list_modules',
+        'list_available_blocks', 'get_selected_blocks', 'list_roles',
+        'list_tax_classes', 'list_employees', 'get_module_catalog',
+        'list_products', 'list_services', 'list_customers',
+        'list_categories', 'list_service_categories',
+        'list_payment_methods', 'search_across_modules',
+    }
+
+    logs = AssistantActionLog.objects.filter(
+        conversation=last, success=True,
+    ).order_by('created_at')
+
+    actions = []
+    for log in logs:
+        if log.tool_name in skip_tools:
+            continue
+        key_arg = ''
+        for k in ('name', 'title', 'business_name', 'module_id', 'query'):
+            val = log.tool_args.get(k)
+            if val:
+                key_arg = f" '{val}'"
+                break
+        actions.append(f"{log.tool_name}{key_arg}")
+
+    if actions:
+        last.summary = ', '.join(actions[:10])
+        last.save(update_fields=['summary'])
 
 
 def _call_cloud_proxy(request, input_data, instructions, tools,
