@@ -264,15 +264,17 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
             else:
                 # Execute immediately (read tools)
                 try:
-                    result = tool.execute(tool_args, request)
+                    result = tool.safe_execute(tool_args, request)
+                    is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
                     AssistantActionLog.objects.create(
                         user_id=user_id,
                         conversation=conversation,
                         tool_name=tool_name,
                         tool_args=tool_args,
                         result=result,
-                        success=True,
+                        success=not is_error,
                         confirmed=True,
+                        error_message=result.get('error', '') if is_error else '',
                     )
                     tool_results.append({
                         'type': 'function_call_output',
@@ -332,7 +334,15 @@ def execute_confirmed_action(action_log, request):
         return {'success': False, 'message': f'Tool {action_log.tool_name} not found', 'result': {}}
 
     try:
-        result = tool.execute(action_log.tool_args, request)
+        result = tool.safe_execute(action_log.tool_args, request)
+        # safe_execute returns error dict instead of raising for common errors
+        if isinstance(result, dict) and 'error' in result and len(result) == 1:
+            action_log.result = result
+            action_log.success = False
+            action_log.confirmed = True
+            action_log.error_message = result['error']
+            action_log.save()
+            return {'success': False, 'message': result['error'], 'result': result}
         action_log.result = result
         action_log.success = True
         action_log.confirmed = True
@@ -794,53 +804,229 @@ def format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
         # Hub core tools
-        'update_store_config': lambda args: f"Update store: {', '.join(k for k, v in args.items() if v is not None)}",
-        'select_blocks': lambda args: f"Select blocks: {', '.join(args.get('block_slugs', []))}",
-        'enable_module': lambda args: f"Enable module: {args.get('module_id', '')}",
-        'disable_module': lambda args: f"Disable module: {args.get('module_id', '')}",
-        'create_role': lambda args: f"Create role: {args.get('display_name', args.get('name', ''))}",
-        'create_employee': lambda args: f"Create employee: {args.get('name', '')} ({args.get('role_name', '')})",
-        'create_tax_class': lambda args: f"Create tax: {args.get('name', '')} ({args.get('rate', '')}%)",
-        'set_regional_config': lambda args: f"Set region: {', '.join(f'{k}={v}' for k, v in args.items() if v is not None)}",
-        'set_business_info': lambda args: f"Set business: {args.get('business_name', '')}",
-        'set_tax_config': lambda args: f"Set tax: {args.get('tax_rate', '')}% (included: {args.get('tax_included', '')})",
-        'complete_setup_step': lambda args: "Complete hub setup",
-        'execute_plan': lambda args: f"Execute business plan ({len(args.get('steps', []))} steps)",
+        'update_store_config': lambda a: f"Update store: {', '.join(k for k, v in a.items() if v is not None)}",
+        'select_blocks': lambda a: f"Select blocks: {', '.join(a.get('block_slugs', []))}",
+        'enable_module': lambda a: f"Enable module: {a.get('module_id', '')}",
+        'disable_module': lambda a: f"Disable module: {a.get('module_id', '')}",
+        'create_role': lambda a: f"Create role: {a.get('display_name', a.get('name', ''))}",
+        'create_employee': lambda a: f"Create employee: {a.get('name', '')} ({a.get('role_name', '')})",
+        'create_tax_class': lambda a: f"Create tax: {a.get('name', '')} ({a.get('rate', '')}%)",
+        'set_regional_config': lambda a: f"Set region: {', '.join(f'{k}={v}' for k, v in a.items() if v is not None)}",
+        'set_business_info': lambda a: f"Set business: {a.get('business_name', '')}",
+        'set_tax_config': lambda a: f"Set tax: {a.get('tax_rate', '')}% (included: {a.get('tax_included', '')})",
+        'complete_setup_step': lambda a: "Complete hub setup",
+        'execute_plan': lambda a: f"Execute business plan ({len(a.get('steps', []))} steps)",
         # Inventory
-        'create_product': lambda args: f"Create product: {args.get('name', '')} ({args.get('price', '')})",
-        'update_product': lambda args: f"Update product: {args.get('product_id', '')}",
-        'create_category': lambda args: f"Create category: {args.get('name', '')}",
-        'adjust_stock': lambda args: f"Adjust stock: {args.get('quantity', '')} units for product {args.get('product_id', '')}",
-        'bulk_adjust_stock': lambda args: f"Bulk adjust stock ({len(args.get('items', []))} products): {args.get('reason', '')}",
+        'create_product': lambda a: f"Create product: {a.get('name', '')} ({a.get('price', '')})",
+        'update_product': lambda a: f"Update product: {a.get('product_id', '')}",
+        'create_category': lambda a: f"Create category: {a.get('name', '')}",
+        'adjust_stock': lambda a: f"Adjust stock: {a.get('quantity', '')} units for product {a.get('product_id', '')}",
+        'bulk_adjust_stock': lambda a: f"Bulk adjust stock ({len(a.get('items', []))} products): {a.get('reason', '')}",
         # Customers
-        'create_customer': lambda args: f"Create customer: {args.get('name', '')}",
-        'update_customer': lambda args: f"Update customer: {args.get('customer_id', '')}",
+        'create_customer': lambda a: f"Create customer: {a.get('name', '')}",
+        'update_customer': lambda a: f"Update customer: {a.get('customer_id', '')}",
         # Services
-        'create_service': lambda args: f"Create service: {args.get('name', '')} ({args.get('price', '')})",
+        'create_service': lambda a: f"Create service: {a.get('name', '')} ({a.get('price', '')})",
+        'create_service_category': lambda a: f"Create service category: {a.get('name', '')}",
+        'update_service': lambda a: f"Update service: {a.get('service_id', '')}",
         # Quotes
-        'create_quote': lambda args: f"Create quote: {args.get('title', '')}",
+        'create_quote': lambda a: f"Create quote: {a.get('title', '')}",
+        'update_quote_status': lambda a: f"Update quote {a.get('quote_id', '')} → {a.get('action', '')}",
         # Leads
-        'create_lead': lambda args: f"Create lead: {args.get('name', '')} ({args.get('company', '')})",
-        'move_lead_stage': lambda args: f"Move lead {args.get('lead_id', '')} to stage {args.get('stage_id', '')}",
+        'create_lead': lambda a: f"Create lead: {a.get('name', '')} ({a.get('company', '')})",
+        'move_lead_stage': lambda a: f"Move lead {a.get('lead_id', '')} to stage {a.get('stage_id', '')}",
         # Purchase Orders
-        'create_purchase_order': lambda args: f"Create purchase order for supplier {args.get('supplier_id', '')}",
+        'create_purchase_order': lambda a: f"Create purchase order for supplier {a.get('supplier_id', '')}",
         # Appointments
-        'create_appointment': lambda args: f"Book appointment: {args.get('customer_name', '')} at {args.get('start_datetime', '')}",
+        'create_appointment': lambda a: f"Book appointment: {a.get('customer_name', '')} at {a.get('start_datetime', '')}",
         # Expenses
-        'create_expense': lambda args: f"Record expense: {args.get('title', '')} ({args.get('amount', '')})",
+        'create_expense': lambda a: f"Record expense: {a.get('title', '')} ({a.get('amount', '')})",
         # Projects
-        'create_project': lambda args: f"Create project: {args.get('name', '')}",
-        'log_time_entry': lambda args: f"Log {args.get('hours', '')}h on project {args.get('project_id', '')}",
+        'create_project': lambda a: f"Create project: {a.get('name', '')}",
+        'log_time_entry': lambda a: f"Log {a.get('hours', '')}h on project {a.get('project_id', '')}",
         # Support
-        'create_ticket': lambda args: f"Create ticket: {args.get('subject', '')}",
+        'create_ticket': lambda a: f"Create ticket: {a.get('subject', '')}",
         # Discounts
-        'create_coupon': lambda args: f"Create coupon: {args.get('code', '')} ({args.get('discount_value', '')}{args.get('discount_type', '')})",
+        'create_coupon': lambda a: f"Create coupon: {a.get('code', '')} ({a.get('discount_value', '')}{a.get('discount_type', '')})",
         # Loyalty
-        'award_loyalty_points': lambda args: f"Award {args.get('points', '')} points to member {args.get('member_id', '')}",
+        'award_loyalty_points': lambda a: f"Award {a.get('points', '')} points to member {a.get('member_id', '')}",
         # Shipping
-        'create_shipment': lambda args: f"Create shipment to {args.get('recipient_name', '')}",
+        'create_shipment': lambda a: f"Create shipment to {a.get('recipient_name', '')}",
         # Gift Cards
-        'create_gift_card': lambda args: f"Create gift card: {args.get('initial_balance', '')} value",
+        'create_gift_card': lambda a: f"Create gift card: {a.get('initial_balance', '')} value",
+        # Analytics
+        'update_analytics_settings': lambda a: f"Update analytics settings",
+        # Pricing
+        'create_price_list': lambda a: f"Create price list: {a.get('name', '')}",
+        'add_price_rule': lambda a: f"Add price rule to list {a.get('price_list_id', '')}",
+        # Accounting Sync
+        'toggle_accounting_sync': lambda a: f"{'Enable' if a.get('enabled') else 'Disable'} accounting sync: {a.get('connection_id', '')}",
+        'trigger_accounting_sync': lambda a: f"Trigger accounting sync: {a.get('connection_id', '')}",
+        # Reservations
+        'create_reservation': lambda a: f"Create reservation: {a.get('customer_name', '')}",
+        'update_reservation_status': lambda a: f"Update reservation {a.get('reservation_id', '')} → {a.get('status', '')}",
+        'create_time_slot': lambda a: f"Create time slot: {a.get('day_of_week', '')} {a.get('start_time', '')}-{a.get('end_time', '')}",
+        'create_blocked_date': lambda a: f"Block date: {a.get('date', '')}",
+        'update_reservation_settings': lambda a: f"Update reservation settings",
+        'create_zone': lambda a: f"Create zone: {a.get('name', '')}",
+        # Tables
+        'create_table': lambda a: f"Create table: {a.get('name', '')}",
+        'update_table': lambda a: f"Update table: {a.get('table_id', '')}",
+        'bulk_create_tables': lambda a: f"Create {a.get('count', '')} tables",
+        'open_table_session': lambda a: f"Open table session: {a.get('table_id', '')}",
+        # Attendance
+        'create_attendance_record': lambda a: f"Record attendance: {a.get('employee_id', '')}",
+        # Maintenance
+        'create_work_order': lambda a: f"Create work order: {a.get('title', a.get('description', '')[:50])}",
+        'create_maintenance_order': lambda a: f"Create maintenance order: {a.get('title', '')}",
+        # Online Payments
+        'create_payment_link': lambda a: f"Create payment link: {a.get('amount', '')}",
+        'create_payment_method': lambda a: f"Create payment method: {a.get('name', '')}",
+        # Accounting
+        'create_account': lambda a: f"Create account: {a.get('code', '')} {a.get('name', '')}",
+        'create_journal_entry': lambda a: f"Create journal entry: {a.get('description', '')}",
+        # Feedback
+        'create_feedback_form': lambda a: f"Create feedback form: {a.get('title', '')}",
+        # Manufacturing
+        'create_bom': lambda a: f"Create BOM: {a.get('name', '')}",
+        'create_production_order': lambda a: f"Create production order: {a.get('bom_id', '')}",
+        # Reports
+        'create_report': lambda a: f"Create report: {a.get('name', '')}",
+        # Messaging
+        'create_message_template': lambda a: f"Create message template: {a.get('name', '')}",
+        'create_message_automation': lambda a: f"Create automation: {a.get('name', '')}",
+        # Approvals
+        'approve_approval_request': lambda a: f"Approve request: {a.get('request_id', '')}",
+        'reject_approval_request': lambda a: f"Reject request: {a.get('request_id', '')}",
+        # Training
+        'create_training_program': lambda a: f"Create training: {a.get('name', '')}",
+        'enroll_employee_in_training': lambda a: f"Enroll employee {a.get('employee_id', '')} in training {a.get('program_id', '')}",
+        # Returns
+        'create_return_reason': lambda a: f"Create return reason: {a.get('name', '')}",
+        # Assets
+        'create_asset': lambda a: f"Create asset: {a.get('name', '')}",
+        'create_asset_maintenance': lambda a: f"Schedule maintenance: {a.get('asset_id', '')}",
+        # Warehouse
+        'create_warehouse': lambda a: f"Create warehouse: {a.get('name', '')}",
+        'create_warehouse_zone': lambda a: f"Create warehouse zone: {a.get('name', '')}",
+        # Facturae
+        'create_facturae_invoice': lambda a: f"Create Facturae invoice: {a.get('invoice_id', '')}",
+        'update_facturae_status': lambda a: f"Update Facturae {a.get('facturae_id', '')} → {a.get('action', '')}",
+        # Payroll
+        'create_payslip': lambda a: f"Create payslip: employee {a.get('employee_id', '')} ({a.get('period', '')})",
+        'update_payslip_status': lambda a: f"Update payslip {a.get('payslip_id', '')} → {a.get('action', '')}",
+        # Marketing Campaigns
+        'create_marketing_campaign': lambda a: f"Create campaign: {a.get('name', '')}",
+        # Commissions
+        'create_commission_rule': lambda a: f"Create commission rule: {a.get('name', '')}",
+        # E-Sign
+        'create_signature_request': lambda a: f"Request signature: {a.get('document_name', a.get('title', ''))}",
+        # Budgets
+        'create_budget': lambda a: f"Create budget: {a.get('name', '')}",
+        # API Connect / Webhooks
+        'create_webhook': lambda a: f"Create webhook: {a.get('url', a.get('name', ''))}",
+        # Marketplace Connect
+        'toggle_marketplace_sync': lambda a: f"{'Enable' if a.get('enabled') else 'Disable'} marketplace sync: {a.get('connection_id', '')}",
+        # Patient Records
+        'create_patient': lambda a: f"Create patient: {a.get('name', '')}",
+        'create_treatment': lambda a: f"Create treatment: {a.get('name', a.get('treatment_type', ''))}",
+        # Surveys
+        'create_survey': lambda a: f"Create survey: {a.get('title', '')}",
+        # Live Chat
+        'assign_chat_conversation': lambda a: f"Assign chat {a.get('conversation_id', '')} to agent {a.get('agent_id', '')}",
+        'close_chat_conversation': lambda a: f"Close chat conversation: {a.get('conversation_id', '')}",
+        'send_chat_message': lambda a: f"Send chat message in conversation {a.get('conversation_id', '')}",
+        # Recruitment
+        'create_job_position': lambda a: f"Create job position: {a.get('title', '')}",
+        'create_candidate': lambda a: f"Create candidate: {a.get('name', '')}",
+        # Multicurrency
+        'add_currency': lambda a: f"Add currency: {a.get('code', '')}",
+        'update_exchange_rate': lambda a: f"Update exchange rate: {a.get('currency_id', '')} → {a.get('rate', '')}",
+        # Properties
+        'create_property': lambda a: f"Create property: {a.get('name', '')}",
+        'create_tenant': lambda a: f"Create tenant: {a.get('name', '')}",
+        'create_lease': lambda a: f"Create lease: property {a.get('property_id', '')}",
+        # Tasks
+        'create_task': lambda a: f"Create task: {a.get('title', '')}",
+        'update_task_status': lambda a: f"Update task {a.get('task_id', '')} → {a.get('status', '')}",
+        # SII
+        'create_sii_submission': lambda a: f"Create SII submission: {a.get('submission_type', '')} ({a.get('period', '')})",
+        # Schedules / Business Hours
+        'set_business_hours': lambda a: f"Set business hours: {a.get('day_of_week', '')}",
+        'create_special_day': lambda a: f"Create special day: {a.get('date', '')}",
+        'bulk_set_business_hours': lambda a: f"Set business hours ({len(a.get('schedules', []))} days)",
+        # Notifications
+        'mark_notifications_read': lambda a: f"Mark notifications as read",
+        # Leave
+        'create_leave_request': lambda a: f"Create leave request: {a.get('leave_type', '')} ({a.get('start_date', '')} - {a.get('end_date', '')})",
+        'approve_leave_request': lambda a: f"Approve leave request: {a.get('request_id', '')}",
+        'reject_leave_request': lambda a: f"Reject leave request: {a.get('request_id', '')}",
+        # Data Export
+        'create_export_job': lambda a: f"Create export job: {a.get('export_type', '')} ({a.get('format', '')})",
+        # Segments
+        'create_segment': lambda a: f"Create segment: {a.get('name', '')}",
+        # GDPR
+        'create_data_request': lambda a: f"Create GDPR request: {a.get('request_type', '')}",
+        # Staff
+        'create_staff_member': lambda a: f"Create staff member: {a.get('name', '')}",
+        'create_staff_role': lambda a: f"Create staff role: {a.get('name', '')}",
+        'create_time_off_request': lambda a: f"Create time off request: {a.get('staff_id', '')}",
+        'assign_service_to_staff': lambda a: f"Assign service {a.get('service_id', '')} to staff {a.get('staff_id', '')}",
+        # Students / Course
+        'create_student': lambda a: f"Create student: {a.get('name', '')}",
+        'create_enrollment': lambda a: f"Create enrollment: student {a.get('student_id', '')}",
+        'create_course': lambda a: f"Create course: {a.get('name', '')}",
+        # Fleet
+        'create_vehicle': lambda a: f"Create vehicle: {a.get('name', a.get('plate_number', ''))}",
+        'create_fuel_log': lambda a: f"Log fuel: vehicle {a.get('vehicle_id', '')}",
+        # Referrals
+        'create_referral': lambda a: f"Create referral: {a.get('referrer_name', a.get('name', ''))}",
+        # Tax
+        'create_tax_rate': lambda a: f"Create tax rate: {a.get('name', '')} ({a.get('rate', '')}%)",
+        # Document Templates
+        'create_document_template': lambda a: f"Create template: {a.get('name', '')}",
+        # Contracts
+        'create_contract': lambda a: f"Create contract: {a.get('title', '')}",
+        'update_contract_status': lambda a: f"Update contract {a.get('contract_id', '')} → {a.get('status', '')}",
+        # Cash Register
+        'create_cash_register': lambda a: f"Create cash register: {a.get('name', '')}",
+        # Orders / Kitchen
+        'create_order': lambda a: f"Create order: {a.get('table_id', a.get('customer_name', ''))}",
+        'update_order_status': lambda a: f"Update order {a.get('order_id', '')} → {a.get('status', '')}",
+        'create_kitchen_station': lambda a: f"Create kitchen station: {a.get('name', '')}",
+        'set_station_routing': lambda a: f"Set station routing: {a.get('station_id', '')}",
+        'update_orders_settings': lambda a: f"Update orders settings",
+        'bump_order_item': lambda a: f"Bump order item: {a.get('item_id', '')}",
+        'bump_order': lambda a: f"Bump order: {a.get('order_id', '')}",
+        'recall_order': lambda a: f"Recall order: {a.get('order_id', '')}",
+        'update_kitchen_settings': lambda a: f"Update kitchen settings",
+        # Email Marketing
+        'create_email_template': lambda a: f"Create email template: {a.get('name', '')}",
+        # Knowledge Base
+        'create_kb_category': lambda a: f"Create KB category: {a.get('name', '')}",
+        'create_kb_article': lambda a: f"Create KB article: {a.get('title', '')}",
+        # Quality
+        'create_inspection': lambda a: f"Create inspection: {a.get('name', a.get('title', ''))}",
+        # E-commerce
+        'update_online_order_status': lambda a: f"Update online order {a.get('order_id', '')} → {a.get('status', '')}",
+        # Subscriptions
+        'create_subscription': lambda a: f"Create subscription: {a.get('customer_id', '')}",
+        'update_subscription_status': lambda a: f"Update subscription {a.get('subscription_id', '')} → {a.get('status', '')}",
+        # Invoicing
+        'create_invoice': lambda a: f"Create invoice: {a.get('customer_id', '')}",
+        'update_invoice_status': lambda a: f"Update invoice {a.get('invoice_id', '')} → {a.get('action', a.get('status', ''))}",
+        # Rentals
+        'create_rental_item': lambda a: f"Create rental item: {a.get('name', '')}",
+        'create_rental': lambda a: f"Create rental: {a.get('customer_id', '')}",
+        # File Manager
+        'create_folder': lambda a: f"Create folder: {a.get('name', '')}",
+        # Online Booking
+        'update_booking_status': lambda a: f"Update booking {a.get('booking_id', '')} → {a.get('action', '')}",
+        'create_online_booking': lambda a: f"Create booking: {a.get('customer_name', '')} on {a.get('date', '')}",
+        # VoIP
+        'add_call_notes': lambda a: f"Add notes to call {a.get('call_id', '')}",
+        # Bank Sync
+        'create_bank_account': lambda a: f"Create bank account: {a.get('name', '')}",
     }
 
     formatter = descriptions.get(tool_name)

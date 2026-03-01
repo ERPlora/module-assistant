@@ -29,6 +29,29 @@ class AssistantTool:
     def execute(self, args: dict, request) -> dict:
         raise NotImplementedError(f"Tool {self.name} must implement execute()")
 
+    def safe_execute(self, args: dict, request) -> dict:
+        """
+        Wrapper around execute() that catches common exceptions
+        and returns user-friendly error dicts instead of raising.
+        """
+        from django.core.exceptions import ObjectDoesNotExist, ValidationError
+        try:
+            return self.execute(args, request)
+        except ObjectDoesNotExist as e:
+            model_name = type(e).__qualname__.rsplit('.', 1)[0] if '.' in type(e).__qualname__ else 'Record'
+            id_val = next((v for k, v in args.items() if 'id' in k.lower()), None)
+            msg = f"{model_name} not found"
+            if id_val:
+                msg += f" (id: {id_val})"
+            return {"error": msg}
+        except ValidationError as e:
+            messages = e.messages if hasattr(e, 'messages') else [str(e)]
+            return {"error": f"Validation error: {'; '.join(messages)}"}
+        except (ValueError, TypeError) as e:
+            return {"error": f"Invalid input: {str(e)}"}
+        except Exception:
+            raise  # Let unknown exceptions propagate for logging
+
     def to_openai_schema(self) -> dict:
         """Convert tool to OpenAI function calling schema."""
         desc = self.description
@@ -83,13 +106,18 @@ def discover_tools():
     TOOL_REGISTRY.clear()
 
     # 1. Register hub core tools (always available)
-    try:
-        from assistant.tools import hub_tools  # noqa: F401
-        from assistant.tools import setup_tools  # noqa: F401
-        from assistant.tools import configure_tools  # noqa: F401
-        from assistant.tools import analytics_tools  # noqa: F401
-    except ImportError as e:
-        logger.error(f"[ASSISTANT] Failed to load core tools: {e}")
+    core_modules = [
+        'assistant.tools.hub_tools',
+        'assistant.tools.setup_tools',
+        'assistant.tools.configure_tools',
+        'assistant.tools.analytics_tools',
+    ]
+    for mod_name in core_modules:
+        try:
+            mod = importlib.import_module(mod_name)
+            importlib.reload(mod)
+        except ImportError as e:
+            logger.error(f"[ASSISTANT] Failed to load {mod_name}: {e}")
 
     # 2. Discover ai_tools.py in each active module
     active_modules = _get_active_module_ids()
@@ -98,7 +126,8 @@ def discover_tools():
         if module_id == 'assistant':
             continue  # Skip self
         try:
-            importlib.import_module(f'{module_id}.ai_tools')
+            mod = importlib.import_module(f'{module_id}.ai_tools')
+            importlib.reload(mod)
             logger.debug(f"[ASSISTANT] Loaded ai_tools from {module_id}")
         except ImportError:
             pass  # Module doesn't have ai_tools.py — normal, skip
