@@ -77,6 +77,7 @@ def discover_tools():
     try:
         from assistant.tools import hub_tools  # noqa: F401
         from assistant.tools import setup_tools  # noqa: F401
+        from assistant.tools import configure_tools  # noqa: F401
     except ImportError as e:
         logger.error(f"[ASSISTANT] Failed to load core tools: {e}")
 

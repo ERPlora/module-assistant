@@ -75,88 +75,51 @@ def logs_page(request):
 
 
 # ============================================================================
-# CHAT API
+# SHARED AGENTIC LOOP
 # ============================================================================
 
-@login_required
-@permission_required('assistant.use_chat')
-@require_POST
-def chat(request):
+class CloudProxyError(Exception):
+    """Custom exception for Cloud proxy errors with status code."""
+    def __init__(self, message, status_code=None, error_data=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_data = error_data or {}
+
+
+class AgenticLoopError(Exception):
+    """Error during the agentic loop, with a user-facing message."""
+    pass
+
+
+def run_agentic_loop(user, conversation, openai_input, context, request):
     """
-    Process a chat message through the agentic loop.
+    Run the agentic tool-calling loop.
 
-    1. Get or create conversation
-    2. Build system prompt
-    3. Call Cloud proxy → OpenAI
-    4. Execute tool calls locally
-    5. Loop until no more tool calls or confirmation needed
-    6. Return HTML partial with assistant response
+    Shared between the HTMX chat view and the REST API.
+
+    Args:
+        user: LocalUser instance
+        conversation: AssistantConversation instance
+        openai_input: str or list (text message or multimodal input)
+        context: 'general' or 'setup'
+        request: Django request (for session, building prompts)
+
+    Returns:
+        dict with keys:
+            response_text: str - The assistant's text response
+            pending_actions: list of dicts with log_id, tool_name, tool_args, description
+            conversation_id: int
+            tier_info: dict or None
     """
-    message = request.POST.get('message', '').strip()
-    conversation_id = request.POST.get('conversation_id', '')
-    context = request.POST.get('context', 'general')
-    uploaded_file = request.FILES.get('file')
-
-    if not message and not uploaded_file:
-        return HttpResponse(
-            render_to_string('assistant/partials/message.html', {
-                'role': 'assistant',
-                'content': 'Please type a message.',
-            }, request=request),
-        )
-
-    user_id = request.session.get('local_user_id')
-
-    # Get or create conversation
-    conversation = _get_or_create_conversation(user_id, conversation_id, context)
-
-    # Get user object for permission checks
-    from apps.accounts.models import LocalUser
-    try:
-        user = LocalUser.objects.get(id=user_id)
-    except LocalUser.DoesNotExist:
-        return _error_response("User not found", request)
-
-    # Build system prompt and tools
+    user_id = str(user.id)
     instructions = build_system_prompt(request, context)
     tools = get_tools_for_context(context, user)
 
-    # Build input for OpenAI (text or multimodal)
-    openai_input = message
-
-    if uploaded_file:
-        # Validate file size (10 MB max)
-        if uploaded_file.size > 10 * 1024 * 1024:
-            return _error_response("File too large. Maximum size is 10 MB.", request)
-
-        mime_type = uploaded_file.content_type or ''
-        image_types = ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
-
-        if mime_type in image_types:
-            # Image: convert to base64 data URL
-            file_bytes = uploaded_file.read()
-            b64 = base64.b64encode(file_bytes).decode('utf-8')
-            openai_input = [
-                {"type": "input_text", "text": message or "Describe this image."},
-                {"type": "input_image", "image_url": f"data:{mime_type};base64,{b64}"},
-            ]
-        elif mime_type == 'application/pdf':
-            openai_input = _process_pdf_upload(uploaded_file, message)
-        else:
-            return _error_response(
-                "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.",
-                request,
-            )
-
-    # If we have a previous response_id, OpenAI will continue that conversation
     previous_response_id = conversation.openai_response_id or None
-
-    # Determine if this is a new session (no previous conversation thread)
     is_new_session = not conversation.openai_response_id
 
-    # Agentic loop
     response_text = ""
-    pending_confirmation = None
+    pending_actions = []
     tier_info = None
 
     for iteration in range(MAX_TOOL_ITERATIONS):
@@ -174,25 +137,25 @@ def chat(request):
         except CloudProxyError as e:
             logger.error(f"[ASSISTANT] Cloud proxy error: {e}")
             if e.status_code == 403:
-                return _error_response(
-                    "AI Assistant subscription required. Please subscribe via the marketplace.",
-                    request,
+                raise AgenticLoopError(
+                    "AI Assistant subscription required. Please subscribe via the marketplace."
                 )
             if e.status_code == 429:
                 limit = e.error_data.get('limit', '')
                 used = e.error_data.get('used', '')
-                return _error_response(
+                raise AgenticLoopError(
                     f"Monthly usage limit reached ({used}/{limit} sessions). "
-                    "Please upgrade your plan or wait until next month.",
-                    request,
+                    "Please upgrade your plan or wait until next month."
                 )
-            return _error_response(f"Error connecting to AI service: {str(e)}", request)
+            raise AgenticLoopError(f"Error connecting to AI service: {str(e)}")
+        except AgenticLoopError:
+            raise
         except Exception as e:
             logger.error(f"[ASSISTANT] Cloud proxy error: {e}")
-            return _error_response(f"Error connecting to AI service: {str(e)}", request)
+            raise AgenticLoopError(f"Error connecting to AI service: {str(e)}")
 
         if not response_data:
-            return _error_response("No response from AI service", request)
+            raise AgenticLoopError("No response from AI service")
 
         # Save response ID for conversation threading
         response_id = response_data.get('id', '')
@@ -203,7 +166,6 @@ def chat(request):
         # Extract output items
         output = response_data.get('output', [])
 
-        # Collect text and function calls
         text_parts = []
         function_calls = []
 
@@ -224,6 +186,8 @@ def chat(request):
 
         # Execute function calls
         tool_results = []
+        has_pending = False
+
         for fc in function_calls:
             tool_name = fc.get('name', '')
             call_id = fc.get('call_id', '')
@@ -252,7 +216,6 @@ def chat(request):
 
             # Confirmation check
             if tool.requires_confirmation:
-                # Create pending action log
                 action_log = AssistantActionLog.objects.create(
                     user_id=user_id,
                     conversation=conversation,
@@ -262,13 +225,12 @@ def chat(request):
                     success=False,
                     confirmed=False,
                 )
-                pending_confirmation = {
+                pending_actions.append({
                     'log_id': action_log.id,
                     'tool_name': tool_name,
                     'tool_args': tool_args,
-                    'tool_description': tool.description,
-                }
-                # Tell the LLM the action is pending confirmation
+                    'description': format_confirmation_text(tool_name, tool_args),
+                })
                 tool_results.append({
                     'type': 'function_call_output',
                     'call_id': call_id,
@@ -278,7 +240,7 @@ def chat(request):
                         "action_id": action_log.id,
                     }),
                 })
-                # Don't execute more tools — wait for confirmation
+                has_pending = True
                 break
             else:
                 # Execute immediately (read tools)
@@ -316,12 +278,10 @@ def chat(request):
                         'output': json.dumps({"error": str(e)}),
                     })
 
-        # If we have a pending confirmation, break and let the LLM describe it
-        if pending_confirmation:
-            # Send tool results back to get the LLM's description of the pending action
+        # If pending, send results back for one more iteration to get description
+        if has_pending:
             openai_input = tool_results
             previous_response_id = response_id
-            # One more iteration to get the description
             continue
 
         # If we only have tool results (no pending), send them back for next iteration
@@ -331,13 +291,119 @@ def chat(request):
         else:
             break
 
+    return {
+        'response_text': response_text,
+        'pending_actions': pending_actions,
+        'conversation_id': conversation.id,
+        'tier_info': tier_info,
+    }
+
+
+def execute_confirmed_action(action_log, request):
+    """
+    Execute a confirmed action. Shared between HTMX and API views.
+
+    Returns:
+        dict with keys: success, message, result
+    """
+    tool = get_tool(action_log.tool_name)
+    if not tool:
+        action_log.error_message = f"Tool {action_log.tool_name} not found"
+        action_log.save()
+        return {'success': False, 'message': f'Tool {action_log.tool_name} not found', 'result': {}}
+
+    try:
+        result = tool.execute(action_log.tool_args, request)
+        action_log.result = result
+        action_log.success = True
+        action_log.confirmed = True
+        action_log.save()
+        return {'success': True, 'message': 'Action confirmed and executed successfully.', 'result': result}
+    except Exception as e:
+        logger.error(f"[ASSISTANT] Confirm action error: {e}", exc_info=True)
+        action_log.result = {"error": str(e)}
+        action_log.success = False
+        action_log.confirmed = True
+        action_log.error_message = str(e)
+        action_log.save()
+        return {'success': False, 'message': f'Error executing action: {str(e)}', 'result': {"error": str(e)}}
+
+
+# ============================================================================
+# HTMX CHAT VIEW
+# ============================================================================
+
+@login_required
+@permission_required('assistant.use_chat')
+@require_POST
+def chat(request):
+    """
+    Process a chat message through the agentic loop (HTMX endpoint).
+    Returns HTML partials.
+    """
+    message = request.POST.get('message', '').strip()
+    conversation_id = request.POST.get('conversation_id', '')
+    context = request.POST.get('context', 'general')
+    uploaded_file = request.FILES.get('file')
+
+    if not message and not uploaded_file:
+        return HttpResponse(
+            render_to_string('assistant/partials/message.html', {
+                'role': 'assistant',
+                'content': 'Please type a message.',
+            }, request=request),
+        )
+
+    user_id = request.session.get('local_user_id')
+
+    # Get or create conversation
+    conversation = _get_or_create_conversation(user_id, conversation_id, context)
+
+    # Get user object
+    from apps.accounts.models import LocalUser
+    try:
+        user = LocalUser.objects.get(id=user_id)
+    except LocalUser.DoesNotExist:
+        return _error_response("User not found", request)
+
+    # Build input for OpenAI (text or multimodal)
+    openai_input = message
+
+    if uploaded_file:
+        if uploaded_file.size > 10 * 1024 * 1024:
+            return _error_response("File too large. Maximum size is 10 MB.", request)
+
+        mime_type = uploaded_file.content_type or ''
+        image_types = ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+
+        if mime_type in image_types:
+            file_bytes = uploaded_file.read()
+            b64 = base64.b64encode(file_bytes).decode('utf-8')
+            openai_input = [
+                {"type": "input_text", "text": message or "Describe this image."},
+                {"type": "input_image", "image_url": f"data:{mime_type};base64,{b64}"},
+            ]
+        elif mime_type == 'application/pdf':
+            openai_input = _process_pdf_upload(uploaded_file, message)
+        else:
+            return _error_response(
+                "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.",
+                request,
+            )
+
+    # Run the agentic loop
+    try:
+        result = run_agentic_loop(user, conversation, openai_input, context, request)
+    except AgenticLoopError as e:
+        return _error_response(str(e), request)
+
     # Build response HTML
     html_parts = []
 
-    if response_text:
+    if result['response_text']:
         import markdown as md
         rendered_content = md.markdown(
-            response_text,
+            result['response_text'],
             extensions=['tables', 'fenced_code', 'nl2br'],
         )
         html_parts.append(render_to_string('assistant/partials/message.html', {
@@ -345,38 +411,35 @@ def chat(request):
             'content': rendered_content,
         }, request=request))
 
-    if pending_confirmation:
+    for action in result['pending_actions']:
         html_parts.append(render_to_string('assistant/partials/confirmation.html', {
-            'log_id': pending_confirmation['log_id'],
-            'tool_name': pending_confirmation['tool_name'],
-            'tool_args': pending_confirmation['tool_args'],
-            'description': _format_confirmation_text(
-                pending_confirmation['tool_name'],
-                pending_confirmation['tool_args'],
-            ),
+            'log_id': action['log_id'],
+            'tool_name': action['tool_name'],
+            'tool_args': action['tool_args'],
+            'description': action['description'],
         }, request=request))
 
     response = HttpResponse(''.join(html_parts))
-    response['X-Conversation-Id'] = str(conversation.id)
-    if tier_info:
-        response['X-Assistant-Tier'] = tier_info.get('tier', '')
+    response['X-Conversation-Id'] = str(result['conversation_id'])
+    if result['tier_info']:
+        response['X-Assistant-Tier'] = result['tier_info'].get('tier', '')
         response['X-Assistant-Usage'] = json.dumps({
-            'sessions_used': tier_info.get('sessions_used', 0),
-            'sessions_limit': tier_info.get('sessions_limit', 0),
-            'tier_name': tier_info.get('tier_name', ''),
+            'sessions_used': result['tier_info'].get('sessions_used', 0),
+            'sessions_limit': result['tier_info'].get('sessions_limit', 0),
+            'tier_name': result['tier_info'].get('tier_name', ''),
         })
     return response
 
 
 # ============================================================================
-# CONFIRMATION ACTIONS
+# HTMX CONFIRMATION ACTIONS
 # ============================================================================
 
 @login_required
 @permission_required('assistant.use_chat')
 @require_POST
 def confirm_action(request, log_id):
-    """Confirm and execute a pending write action."""
+    """Confirm and execute a pending write action (HTMX endpoint)."""
     user_id = request.session.get('local_user_id')
 
     try:
@@ -391,39 +454,18 @@ def confirm_action(request, log_id):
             'content': 'Action not found or already processed.',
         }, request=request))
 
-    tool = get_tool(action_log.tool_name)
-    if not tool:
-        action_log.error_message = f"Tool {action_log.tool_name} not found"
-        action_log.save()
+    result = execute_confirmed_action(action_log, request)
+
+    if result['success']:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
-            'content': f'Error: Tool {action_log.tool_name} not found.',
-        }, request=request))
-
-    try:
-        result = tool.execute(action_log.tool_args, request)
-        action_log.result = result
-        action_log.success = True
-        action_log.confirmed = True
-        action_log.save()
-
-        return HttpResponse(render_to_string('assistant/partials/message.html', {
-            'role': 'system',
-            'content': f'Action confirmed and executed successfully.',
+            'content': result['message'],
             'success': True,
         }, request=request))
-
-    except Exception as e:
-        logger.error(f"[ASSISTANT] Confirm action error: {e}", exc_info=True)
-        action_log.result = {"error": str(e)}
-        action_log.success = False
-        action_log.confirmed = True
-        action_log.error_message = str(e)
-        action_log.save()
-
+    else:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
-            'content': f'Error executing action: {str(e)}',
+            'content': result['message'],
             'error': True,
         }, request=request))
 
@@ -432,7 +474,7 @@ def confirm_action(request, log_id):
 @permission_required('assistant.use_chat')
 @require_POST
 def cancel_action(request, log_id):
-    """Cancel a pending write action."""
+    """Cancel a pending write action (HTMX endpoint)."""
     user_id = request.session.get('local_user_id')
 
     try:
@@ -470,14 +512,6 @@ def _get_or_create_conversation(user_id, conversation_id, context):
         user_id=user_id,
         context=context,
     )
-
-
-class CloudProxyError(Exception):
-    """Custom exception for Cloud proxy errors with status code."""
-    def __init__(self, message, status_code=None, error_data=None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.error_data = error_data or {}
 
 
 def _call_cloud_proxy(request, input_data, instructions, tools,
@@ -581,7 +615,6 @@ def _process_pdf_upload(uploaded_file, message):
         # Render up to 10 pages as images
         for page_num in range(min(len(doc), 10)):
             page = doc[page_num]
-            # Render at 150 DPI for good quality without being too large
             pix = page.get_pixmap(dpi=150)
             img_bytes = pix.tobytes("png")
             b64 = base64.b64encode(img_bytes).decode('utf-8')
@@ -609,7 +642,7 @@ def _process_pdf_upload(uploaded_file, message):
         )
 
 
-def _format_confirmation_text(tool_name, tool_args):
+def format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
         # Hub core tools
@@ -624,6 +657,7 @@ def _format_confirmation_text(tool_name, tool_args):
         'set_business_info': lambda args: f"Set business: {args.get('business_name', '')}",
         'set_tax_config': lambda args: f"Set tax: {args.get('tax_rate', '')}% (included: {args.get('tax_included', '')})",
         'complete_setup_step': lambda args: "Complete hub setup",
+        'execute_plan': lambda args: f"Execute business plan ({len(args.get('steps', []))} steps)",
         # Inventory
         'create_product': lambda args: f"Create product: {args.get('name', '')} ({args.get('price', '')})",
         'update_product': lambda args: f"Update product: {args.get('product_id', '')}",
