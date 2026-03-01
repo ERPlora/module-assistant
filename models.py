@@ -52,3 +52,55 @@ class AssistantActionLog(models.Model):
     def __str__(self):
         status = 'confirmed' if self.confirmed else 'pending'
         return f"{self.tool_name} ({status}) by {self.user.name}"
+
+
+class AssistantFeedback(models.Model):
+    """
+    Tracks feedback events for product improvement.
+
+    Automatically recorded when tools fail, searches return zero results,
+    or users request features that don't exist. Sent to Cloud for
+    analysis and email notification to the ERPlora team.
+    """
+    EVENT_TYPES = [
+        ('tool_error', 'Tool Error'),
+        ('zero_results', 'Zero Results'),
+        ('missing_feature', 'Missing Feature'),
+    ]
+
+    event_type = models.CharField(max_length=30, choices=EVENT_TYPES)
+    tool_name = models.CharField(max_length=100, blank=True, default='')
+    user_message = models.TextField(blank=True, default='')
+    details = models.JSONField(default=dict)
+    user = models.ForeignKey(
+        'accounts.LocalUser',
+        on_delete=models.CASCADE,
+        related_name='assistant_feedback',
+    )
+    conversation = models.ForeignKey(
+        AssistantConversation,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='feedback_events',
+    )
+    action_log = models.ForeignKey(
+        AssistantActionLog,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='feedback_events',
+    )
+    sent_to_cloud = models.BooleanField(default=False)
+    cloud_error = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['event_type', 'created_at']),
+            models.Index(fields=['sent_to_cloud', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_event_type_display()} — {self.tool_name or 'N/A'}"

@@ -22,6 +22,7 @@ from apps.core.htmx import htmx_view
 from .models import AssistantConversation, AssistantActionLog
 from .prompts import build_system_prompt
 from .tools import get_tools_for_context, get_tool
+from .feedback import record_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
             tier_info: dict or None
     """
     user_id = str(user.id)
+    original_message = openai_input if isinstance(openai_input, str) else ''
     instructions = build_system_prompt(request, context)
     tools = get_tools_for_context(context, user)
 
@@ -217,6 +219,14 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
             _set_progress(request_id, 'tool', f'Using {tool_name}...')
             tool = get_tool(tool_name)
             if not tool:
+                record_feedback(
+                    event_type='missing_feature',
+                    user=user,
+                    conversation=conversation,
+                    tool_name=tool_name,
+                    user_message=original_message,
+                    details={'tool_args': tool_args},
+                )
                 tool_results.append({
                     'type': 'function_call_output',
                     'call_id': call_id,
@@ -266,7 +276,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
                 try:
                     result = tool.safe_execute(tool_args, request)
                     is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
-                    AssistantActionLog.objects.create(
+                    action_log = AssistantActionLog.objects.create(
                         user_id=user_id,
                         conversation=conversation,
                         tool_name=tool_name,
@@ -276,6 +286,32 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
                         confirmed=True,
                         error_message=result.get('error', '') if is_error else '',
                     )
+                    # Feedback: tool_error
+                    if is_error:
+                        record_feedback(
+                            event_type='tool_error',
+                            user=user,
+                            conversation=conversation,
+                            action_log=action_log,
+                            tool_name=tool_name,
+                            user_message=original_message,
+                            details={'error': result.get('error', ''), 'tool_args': tool_args},
+                        )
+                    # Feedback: zero_results
+                    if (
+                        tool_name == 'search_across_modules'
+                        and isinstance(result, dict)
+                        and result.get('total_results') == 0
+                    ):
+                        record_feedback(
+                            event_type='zero_results',
+                            user=user,
+                            conversation=conversation,
+                            action_log=action_log,
+                            tool_name=tool_name,
+                            user_message=original_message,
+                            details={'query': result.get('query', tool_args.get('query', ''))},
+                        )
                     tool_results.append({
                         'type': 'function_call_output',
                         'call_id': call_id,
@@ -283,7 +319,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
                     })
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Tool {tool_name} error: {e}", exc_info=True)
-                    AssistantActionLog.objects.create(
+                    action_log = AssistantActionLog.objects.create(
                         user_id=user_id,
                         conversation=conversation,
                         tool_name=tool_name,
@@ -292,6 +328,16 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
                         success=False,
                         confirmed=True,
                         error_message=str(e),
+                    )
+                    # Feedback: tool_error (exception)
+                    record_feedback(
+                        event_type='tool_error',
+                        user=user,
+                        conversation=conversation,
+                        action_log=action_log,
+                        tool_name=tool_name,
+                        user_message=original_message,
+                        details={'error': str(e), 'tool_args': tool_args},
                     )
                     tool_results.append({
                         'type': 'function_call_output',
