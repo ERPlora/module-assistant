@@ -1,7 +1,9 @@
 from django.db import models
 
+from apps.core.models.base import HubBaseModel
 
-class AssistantConversation(models.Model):
+
+class AssistantConversation(HubBaseModel):
     """Tracks conversation state per user."""
     user = models.ForeignKey(
         'accounts.LocalUser',
@@ -14,17 +16,16 @@ class AssistantConversation(models.Model):
     summary = models.TextField(blank=True, default='')
     first_message = models.TextField(blank=True, default='')
     message_count = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
+    class Meta(HubBaseModel.Meta):
+        db_table = 'assistant_assistantconversation'
         ordering = ['-updated_at']
 
     def __str__(self):
         return f"Conversation {self.id} ({self.user.name}, {self.context})"
 
 
-class AssistantActionLog(models.Model):
+class AssistantActionLog(HubBaseModel):
     """Audit trail for all assistant-executed actions."""
     user = models.ForeignKey(
         'accounts.LocalUser',
@@ -44,9 +45,9 @@ class AssistantActionLog(models.Model):
     success = models.BooleanField(default=False)
     confirmed = models.BooleanField(default=False)
     error_message = models.TextField(blank=True, default='')
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
+    class Meta(HubBaseModel.Meta):
+        db_table = 'assistant_assistantactionlog'
         ordering = ['-created_at']
 
     def __str__(self):
@@ -54,7 +55,7 @@ class AssistantActionLog(models.Model):
         return f"{self.tool_name} ({status}) by {self.user.name}"
 
 
-class AssistantFeedback(models.Model):
+class AssistantFeedback(HubBaseModel):
     """
     Tracks feedback events for product improvement.
 
@@ -93,9 +94,9 @@ class AssistantFeedback(models.Model):
     )
     sent_to_cloud = models.BooleanField(default=False)
     cloud_error = models.CharField(max_length=255, blank=True, default='')
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
+    class Meta(HubBaseModel.Meta):
+        db_table = 'assistant_assistantfeedback'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['event_type', 'created_at']),
