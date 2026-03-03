@@ -267,9 +267,9 @@ def _data_overview():
 
 
 def _roles_context(request):
-    """List configured roles."""
+    """List configured roles with their permission wildcards."""
     try:
-        from apps.accounts.models import Role
+        from apps.accounts.models import Role, RolePermission
         hub_id = request.session.get('hub_id')
         roles = Role.objects.filter(
             hub_id=hub_id, is_active=True, is_deleted=False,
@@ -278,11 +278,27 @@ def _roles_context(request):
         if not roles.exists():
             return ''
 
-        role_parts = []
+        lines = ['## Configured Roles']
         for r in roles:
-            role_parts.append(f"{r.name} ({r.source})")
+            wildcards = list(
+                RolePermission.objects.filter(
+                    role=r, is_deleted=False, wildcard__gt='',
+                ).values_list('wildcard', flat=True)
+            )
+            perm_count = len(r.get_all_permissions()) if hasattr(r, 'get_all_permissions') else 0
+            wc_str = ', '.join(wildcards[:10]) if wildcards else 'none'
+            lines.append(
+                f"- **{r.display_name}** ({r.name}, {r.source}): "
+                f"{perm_count} permissions, wildcards: {wc_str}"
+            )
 
-        return f"## Configured Roles\n{', '.join(role_parts)}"
+        lines.append(
+            "\nRoles define what each user can do. "
+            "admin=full access, manager=CRUD without delete/settings, "
+            "employee=view+basic ops, viewer=read-only. "
+            "Custom roles can be created by admins."
+        )
+        return '\n'.join(lines)
     except Exception:
         return ''
 

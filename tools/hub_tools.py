@@ -252,7 +252,7 @@ class GetModuleCatalog(AssistantTool):
 @register_tool
 class ListRoles(AssistantTool):
     name = "list_roles"
-    description = "List all roles (basic, solution, custom) with their permissions summary"
+    description = "List all roles (basic, solution, custom) with their permission wildcards and expanded permission count"
     parameters = {
         "type": "object",
         "properties": {},
@@ -261,25 +261,32 @@ class ListRoles(AssistantTool):
     }
 
     def execute(self, args, request):
-        from apps.accounts.models import Role
+        from apps.accounts.models import Role, RolePermission
         hub_id = request.session.get('hub_id')
         roles = Role.objects.filter(
             hub_id=hub_id, is_deleted=False, is_active=True
         ).order_by('source', 'name')
 
-        return {
-            "roles": [
-                {
-                    "id": str(r.id),
-                    "name": r.name,
-                    "display_name": r.display_name,
-                    "source": r.source,
-                    "is_system": r.is_system,
-                    "permission_count": r.permissions.count(),
-                }
-                for r in roles
-            ]
-        }
+        result = []
+        for r in roles:
+            wildcards = list(
+                RolePermission.objects.filter(
+                    role=r, is_deleted=False, wildcard__gt='',
+                ).values_list('wildcard', flat=True)
+            )
+            expanded = r.get_all_permissions() if hasattr(r, 'get_all_permissions') else set()
+            result.append({
+                "id": str(r.id),
+                "name": r.name,
+                "display_name": r.display_name,
+                "description": r.description,
+                "source": r.source,
+                "is_system": r.is_system,
+                "wildcards": wildcards,
+                "expanded_permission_count": len(expanded),
+            })
+
+        return {"roles": result}
 
 
 @register_tool

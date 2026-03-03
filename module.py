@@ -40,3 +40,17 @@ PERMISSIONS = [
     'assistant.view_logs',
     'assistant.manage_settings',
 ]
+
+ROLE_PERMISSIONS = {
+    "admin": ["*"],
+    "manager": [
+        "use_chat",
+        "use_setup_mode",
+        "view_logs",
+    ],
+    "employee": [
+        "use_chat",
+        "use_setup_mode",
+        "view_logs",
+    ],
+}
