@@ -113,10 +113,10 @@
     #file-preview-icon.active { display: inline; }
 </style>
 <script nonce="{{ csp_nonce }}">
-var _chatFileData = null;
-var _chatUrl = '{% url "assistant:chat_message" %}';
+window._chatFileData = null;
+window._chatUrl = '{% url "assistant:chat_message" %}';
 
-function startNewConversation() {
+window.startNewConversation = function() {
     document.getElementById('conv-id').value = '';
     var msgs = document.getElementById('chat-messages');
     msgs.innerHTML =
@@ -147,7 +147,7 @@ document.addEventListener('htmx:afterSwap', function(event) {
     }
 });
 
-function handleFileSelect(input) {
+window.handleFileSelect = function(input) {
     var file = input.files[0];
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
@@ -185,7 +185,7 @@ function handleFileSelect(input) {
     }
 }
 
-function clearFileAttachment() {
+window.clearFileAttachment = function() {
     _chatFileData = null;
     var fileInput = document.getElementById('chat-file');
     if (fileInput) fileInput.value = '';
@@ -197,7 +197,7 @@ function clearFileAttachment() {
     if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
 }
 
-function submitChat() {
+window.submitChat = function() {
     var input = document.getElementById('chat-input');
     var msg = input.value.trim();
     if (!msg && !_chatFileData) return;
@@ -274,7 +274,7 @@ function submitChat() {
     });
 }
 
-function toggleVoiceInput(btn) {
+window.toggleVoiceInput = function(btn) {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
     if (btn._recognition) {
