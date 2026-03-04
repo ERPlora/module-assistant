@@ -32,7 +32,13 @@
 
     <!-- Input area -->
     <div class="p-4 border-t border-base-200">
-        <form id="chat-form">
+        <form id="chat-form"
+              hx-post="{% url 'assistant:chat_message' %}"
+              hx-target="#chat-messages"
+              hx-swap="beforeend"
+              hx-on::before-request="chatBeforeRequest(this)"
+              hx-on::after-request="chatAfterRequest(this, event)"
+              enctype="multipart/form-data">
             {% csrf_token %}
             <input type="hidden" name="conversation_id" id="conv-id" value="">
             <input type="hidden" name="context" value="{{ context|default:'general' }}">
@@ -45,7 +51,7 @@
                 <button type="button" id="chat-file-remove" class="btn btn-ghost btn-sm" title="{% trans 'Remove' %}">&times;</button>
             </div>
 
-            <input type="file" id="chat-file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden>
+            <input type="file" id="chat-file" name="file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden>
 
             <div class="flex gap-2 items-end">
                 <textarea
@@ -67,7 +73,7 @@
                         title="{% trans 'Voice input' %}">
                     {% icon "mic-outline" %}
                 </button>
-                <button type="button"
+                <button type="submit"
                         id="chat-submit"
                         class="btn color-primary">
                     <span id="chat-loading" class="loading loading-sm" style="display:none;"></span>
@@ -106,244 +112,3 @@
     #file-preview-img.active { display: block; }
     #file-preview-icon.active { display: inline; }
 </style>
-
-<script nonce="{{ csp_nonce }}">
-(function() {
-    // Always update the URL (may change between swaps in dev)
-    window._chatUrl = '{% url "assistant:chat_message" %}';
-    // Reset file attachment on each load
-    window._chatFileData = null;
-
-    // Register document-level listeners only once
-    if (window._chatListenersAttached) return;
-    window._chatListenersAttached = true;
-
-    function clearFileAttachment() {
-        window._chatFileData = null;
-        var fi = document.getElementById('chat-file');
-        if (fi) fi.value = '';
-        var fp = document.getElementById('file-preview');
-        if (fp) fp.classList.add('hidden');
-        var img = document.getElementById('file-preview-img');
-        if (img) { img.classList.add('hidden'); img.classList.remove('active'); }
-        var icon = document.getElementById('file-preview-icon');
-        if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
-    }
-
-    function submitChat() {
-        var input = document.getElementById('chat-input');
-        if (!input) return;
-        var msg = input.value.trim();
-        if (!msg && !window._chatFileData) return;
-
-        var msgs = document.getElementById('chat-messages');
-        var submitBtn = document.getElementById('chat-submit');
-
-        var bubbleHtml = '';
-        if (window._chatFileData && window._chatFileData.type.startsWith('image/')) {
-            bubbleHtml += '<img src="' + document.getElementById('file-preview-img').src + '" class="max-h-32 rounded mb-2" alt="Attached">';
-        } else if (window._chatFileData) {
-            bubbleHtml += '<div class="text-sm opacity-75 mb-1">\uD83D\uDCC4 ' + window._chatFileData.name + '</div>';
-        }
-        if (msg) bubbleHtml += msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-        var bubble = document.createElement('div');
-        bubble.className = 'chat-message chat-user';
-        bubble.innerHTML = '<div class="chat-bubble">' + bubbleHtml + '</div>';
-        msgs.appendChild(bubble);
-
-        var typing = document.createElement('div');
-        typing.id = 'typing-indicator';
-        typing.className = 'chat-message chat-assistant';
-        typing.innerHTML = '<div class="chat-typing"><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span><span class="chat-typing-dot"></span></div>';
-        msgs.appendChild(typing);
-        msgs.scrollTop = msgs.scrollHeight;
-
-        input.disabled = true;
-        submitBtn.disabled = true;
-        submitBtn.classList.add('is-loading');
-
-        var formData = new FormData();
-        formData.append('message', msg);
-        formData.append('conversation_id', document.getElementById('conv-id').value);
-        var ctxEl = document.querySelector('[name=context]');
-        formData.append('context', ctxEl ? ctxEl.value : 'general');
-        formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
-        if (window._chatFileData) formData.append('file', window._chatFileData);
-
-        input.value = '';
-        input.style.height = 'auto';
-        clearFileAttachment();
-
-        fetch(window._chatUrl, {
-            method: 'POST',
-            body: formData,
-            headers: {'HX-Request': 'true'},
-        })
-        .then(function(response) {
-            var convId = response.headers.get('X-Conversation-Id');
-            if (convId) document.getElementById('conv-id').value = convId;
-            return response.text();
-        })
-        .then(function(html) {
-            var t = document.getElementById('typing-indicator');
-            if (t) t.remove();
-            msgs.insertAdjacentHTML('beforeend', html);
-            msgs.scrollTop = msgs.scrollHeight;
-            if (window.htmx) htmx.process(msgs.lastElementChild);
-            input.disabled = false;
-            submitBtn.disabled = false;
-            submitBtn.classList.remove('is-loading');
-            input.focus();
-        })
-        .catch(function() {
-            var t = document.getElementById('typing-indicator');
-            if (t) t.remove();
-            msgs.insertAdjacentHTML('beforeend',
-                '<div class="chat-message chat-assistant"><div class="chat-bubble">{% trans "Error: Could not reach AI service." %}</div></div>');
-            msgs.scrollTop = msgs.scrollHeight;
-            input.disabled = false;
-            submitBtn.disabled = false;
-            submitBtn.classList.remove('is-loading');
-            input.focus();
-        });
-    }
-
-    document.addEventListener('click', function(e) {
-        var t = e.target;
-
-        if (t.closest('#chat-submit')) {
-            submitChat();
-            return;
-        }
-        if (t.closest('#chat-new')) {
-            document.getElementById('conv-id').value = '';
-            var msgs = document.getElementById('chat-messages');
-            msgs.innerHTML =
-                '<div class="chat-message chat-assistant">' +
-                    '<div class="chat-bubble">' +
-                        '<p>{% trans "Hello! I\'m your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>' +
-                        '<p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>' +
-                        '<ul class="mt-1 text-sm opacity-75 list-disc pl-4">' +
-                            '<li>{% trans "What modules are available?" %}</li>' +
-                            '<li>{% trans "Show me the current configuration" %}</li>' +
-                            '<li>{% trans "Create an employee named Juan with manager role" %}</li>' +
-                        '</ul>' +
-                    '</div>' +
-                '</div>';
-            clearFileAttachment();
-            var input = document.getElementById('chat-input');
-            input.value = '';
-            input.disabled = false;
-            input.focus();
-            var btn = document.getElementById('chat-submit');
-            btn.disabled = false;
-            btn.classList.remove('is-loading');
-            return;
-        }
-        if (t.closest('#chat-attach')) {
-            document.getElementById('chat-file').click();
-            return;
-        }
-        if (t.closest('#chat-file-remove')) {
-            clearFileAttachment();
-            return;
-        }
-        if (t.closest('#chat-mic')) {
-            var btn = t.closest('#chat-mic');
-            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) return;
-            if (btn._recognition) {
-                btn._recognition.stop();
-                btn._recognition = null;
-                btn.classList.remove('recording', 'color-error');
-                return;
-            }
-            var recognition = new SR();
-            recognition.lang = document.documentElement.lang || 'en';
-            recognition.interimResults = true;
-            recognition.continuous = false;
-            var inp = document.getElementById('chat-input');
-            var beforeText = inp.value;
-            recognition.onresult = function(ev) {
-                var transcript = '';
-                for (var i = 0; i < ev.results.length; i++) transcript += ev.results[i][0].transcript;
-                inp.value = beforeText + (beforeText ? ' ' : '') + transcript;
-            };
-            recognition.onend = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
-            recognition.onerror = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
-            btn._recognition = recognition;
-            btn.classList.add('recording', 'color-error');
-            recognition.start();
-            return;
-        }
-    });
-
-    document.addEventListener('keydown', function(e) {
-        if (e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submitChat();
-        }
-    });
-
-    document.addEventListener('input', function(e) {
-        if (e.target.id === 'chat-input') {
-            e.target.style.height = 'auto';
-            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
-        }
-    });
-
-    document.addEventListener('change', function(e) {
-        if (e.target.id !== 'chat-file') return;
-        var file = e.target.files[0];
-        if (!file) return;
-        if (file.size > 10 * 1024 * 1024) {
-            if (window.showToast) showToast('{% trans "File too large. Maximum size is 10 MB." %}', 'warning');
-            e.target.value = '';
-            return;
-        }
-        var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-        if (allowed.indexOf(file.type) === -1) {
-            if (window.showToast) showToast('{% trans "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF." %}', 'warning');
-            e.target.value = '';
-            return;
-        }
-        window._chatFileData = file;
-        var preview = document.getElementById('file-preview');
-        var previewImg = document.getElementById('file-preview-img');
-        var previewIcon = document.getElementById('file-preview-icon');
-        document.getElementById('file-preview-name').textContent = file.name;
-        preview.classList.remove('hidden');
-        if (file.type.startsWith('image/')) {
-            var reader = new FileReader();
-            reader.onload = function(ev) {
-                previewImg.src = ev.target.result;
-                previewImg.classList.remove('hidden');
-                previewImg.classList.add('active');
-            };
-            reader.readAsDataURL(file);
-            previewIcon.classList.add('hidden');
-            previewIcon.classList.remove('active');
-        } else {
-            previewImg.classList.add('hidden');
-            previewImg.classList.remove('active');
-            previewIcon.classList.remove('hidden');
-            previewIcon.classList.add('active');
-        }
-    });
-
-    document.addEventListener('submit', function(e) {
-        if (e.target.id === 'chat-form') {
-            e.preventDefault();
-            submitChat();
-        }
-    });
-
-    document.addEventListener('htmx:afterSwap', function(event) {
-        var msgs = document.getElementById('chat-messages');
-        if (msgs && msgs.contains(event.detail.target)) {
-            msgs.scrollTop = msgs.scrollHeight;
-        }
-    });
-})();
-</script>
