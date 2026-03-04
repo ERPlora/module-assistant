@@ -10,7 +10,7 @@ class AssistantConversation(HubBaseModel):
         on_delete=models.CASCADE,
         related_name='assistant_conversations',
     )
-    openai_response_id = models.CharField(max_length=255, blank=True, default='')
+    ai_conversation_id = models.CharField(max_length=255, blank=True, default='')
     context = models.CharField(max_length=50, default='general')
     title = models.CharField(max_length=200, blank=True, default='')
     summary = models.TextField(blank=True, default='')

@@ -53,7 +53,7 @@ class AssistantTool:
             raise  # Let unknown exceptions propagate for logging
 
     def to_openai_schema(self) -> dict:
-        """Convert tool to OpenAI function calling schema."""
+        """Convert tool to AI function calling schema (Responses API format)."""
         desc = self.description
         if self.examples:
             import json
@@ -139,7 +139,7 @@ def discover_tools():
 
 def get_tools_for_context(context='general', user=None):
     """
-    Return OpenAI tool schemas filtered by context and user permissions.
+    Return tool schemas filtered by context and user permissions.
 
     Args:
         context: 'general' or 'setup'

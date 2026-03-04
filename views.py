@@ -119,7 +119,7 @@ def _set_progress(request_id, event_type, data=''):
         )
 
 
-def run_agentic_loop(user, conversation, openai_input, context, request,
+def run_agentic_loop(user, conversation, ai_input, context, request,
                      request_id=None):
     """
     Run the agentic tool-calling loop.
@@ -129,7 +129,7 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
     Args:
         user: LocalUser instance
         conversation: AssistantConversation instance
-        openai_input: str or list (text message or multimodal input)
+        ai_input: str or list (text message or multimodal input)
         context: 'general' or 'setup'
         request: Django request (for session, building prompts)
         request_id: optional ID for progress tracking via polling
@@ -142,12 +142,13 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
             tier_info: dict or None
     """
     user_id = str(user.id)
-    original_message = openai_input if isinstance(openai_input, str) else ''
+    original_message = ai_input if isinstance(ai_input, str) else ''
     instructions = build_system_prompt(request, context)
     tools = get_tools_for_context(context, user)
 
-    previous_response_id = conversation.openai_response_id or None
-    is_new_session = not conversation.openai_response_id
+    # Cloud manages conversation history keyed by our own conversation.id
+    conversation_id = str(conversation.id)
+    is_new_session = conversation.message_count == 0
 
     response_text = ""
     pending_actions = []
@@ -159,10 +160,10 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
         try:
             response_data, loop_tier_info = _call_cloud_proxy(
                 request=request,
-                input_data=openai_input,
+                input_data=ai_input,
                 instructions=instructions,
                 tools=tools,
-                previous_response_id=previous_response_id,
+                conversation_id=conversation_id,
                 new_session=(is_new_session and iteration == 0),
             )
             if loop_tier_info:
@@ -190,11 +191,8 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
         if not response_data:
             raise AgenticLoopError("No response from AI service")
 
-        # Save response ID for conversation threading
+        # Conversation history is managed by Cloud proxy (keyed by conversation_id)
         response_id = response_data.get('id', '')
-        if response_id:
-            conversation.openai_response_id = response_id
-            conversation.save(update_fields=['openai_response_id', 'updated_at'])
 
         # Extract output items
         output = response_data.get('output', [])
@@ -372,14 +370,12 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
 
         # If pending, send results back for one more iteration to get description
         if has_pending:
-            openai_input = tool_results
-            previous_response_id = response_id
+            ai_input = tool_results
             continue
 
         # If we only have tool results (no pending), send them back for next iteration
         if tool_results:
-            openai_input = tool_results
-            previous_response_id = response_id
+            ai_input = tool_results
         else:
             break
 
@@ -466,8 +462,8 @@ def chat(request):
     except LocalUser.DoesNotExist:
         return _error_response("User not found", request)
 
-    # Build input for OpenAI (text or multimodal)
-    openai_input = message
+    # Build input (text or multimodal)
+    ai_input = message
 
     if uploaded_file:
         if uploaded_file.size > 10 * 1024 * 1024:
@@ -479,12 +475,12 @@ def chat(request):
         if mime_type in image_types:
             file_bytes = uploaded_file.read()
             b64 = base64.b64encode(file_bytes).decode('utf-8')
-            openai_input = [
+            ai_input = [
                 {"type": "input_text", "text": message or "Describe this image."},
                 {"type": "input_image", "image_url": f"data:{mime_type};base64,{b64}"},
             ]
         elif mime_type == 'application/pdf':
-            openai_input = _process_pdf_upload(uploaded_file, message)
+            ai_input = _process_pdf_upload(uploaded_file, message)
         else:
             return _error_response(
                 "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF.",
@@ -509,7 +505,7 @@ def chat(request):
 
         try:
             result = run_agentic_loop(
-                user, conversation, openai_input, context, fake_request,
+                user, conversation, ai_input, context, fake_request,
                 request_id=request_id,
             )
             # Store the completed result
@@ -747,12 +743,13 @@ def _summarize_last_conversation(user_id):
 
 
 def _call_cloud_proxy(request, input_data, instructions, tools,
-                      previous_response_id=None, new_session=False):
+                      conversation_id='', new_session=False):
     """
-    Call the Cloud proxy endpoint to forward to OpenAI.
+    Call the Cloud proxy endpoint to forward to Gemini.
 
     Uses the Hub's JWT token for authentication.
-    Cloud determines the model based on the Hub's tier.
+    Cloud determines the model based on the Hub's tier and manages
+    conversation history server-side.
 
     Returns (response_data, tier_info) where tier_info is a dict with
     tier/usage data from response headers (or None).
@@ -774,13 +771,11 @@ def _call_cloud_proxy(request, input_data, instructions, tools,
     payload = {
         'input': input_data,
         'instructions': instructions,
+        'conversation_id': conversation_id,
     }
 
     if tools:
         payload['tools'] = tools
-
-    if previous_response_id:
-        payload['previous_response_id'] = previous_response_id
 
     if new_session:
         payload['new_session'] = True
@@ -837,7 +832,7 @@ def _error_response(message, request):
 
 def _process_pdf_upload(uploaded_file, message):
     """
-    Process a PDF upload into multimodal input for OpenAI.
+    Process a PDF upload into multimodal input for the AI assistant.
 
     Tries PyMuPDF (fitz) to render pages as images.
     Falls back to text extraction if PyMuPDF is not installed.
