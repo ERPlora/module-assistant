@@ -1,6 +1,17 @@
 {% load i18n djicons static %}
 
 <div class="flex flex-col h-full" style="min-height: calc(100vh - 180px);">
+    <!-- Chat toolbar -->
+    <div class="flex items-center justify-end px-4 py-2 border-b border-base-200">
+        <button type="button"
+                class="btn btn-ghost btn-sm"
+                onclick="startNewConversation()"
+                title="{% trans 'New conversation' %}">
+            {% icon "add-circle-outline" %}
+            <span class="hidden sm:inline ml-1">{% trans "New Chat" %}</span>
+        </button>
+    </div>
+
     <!-- Chat messages area -->
     <div id="chat-messages"
          class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
@@ -104,6 +115,34 @@
 
 <script nonce="{{ csp_nonce }}">
 var _chatFileData = null;
+
+function startNewConversation() {
+    // Clear conversation ID so next message creates a new conversation
+    document.getElementById('conv-id').value = '';
+    // Clear chat messages and show welcome again
+    var msgs = document.getElementById('chat-messages');
+    msgs.innerHTML =
+        '<div class="chat-message chat-assistant">' +
+            '<div class="chat-bubble">' +
+                '<p>{% trans "Hello! I\'m your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>' +
+                '<p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>' +
+                '<ul class="mt-1 text-sm opacity-75 list-disc pl-4">' +
+                    '<li>{% trans "What modules are available?" %}</li>' +
+                    '<li>{% trans "Show me the current configuration" %}</li>' +
+                    '<li>{% trans "Create an employee named Juan with manager role" %}</li>' +
+                '</ul>' +
+            '</div>' +
+        '</div>';
+    // Clear file attachment
+    clearFileAttachment();
+    // Focus input
+    var input = document.getElementById('chat-input');
+    input.value = '';
+    input.disabled = false;
+    input.focus();
+    document.getElementById('chat-submit').disabled = false;
+    document.getElementById('chat-submit').classList.remove('is-loading');
+}
 
 // Auto-scroll when HTMX swaps content (polling progress updates)
 document.addEventListener('htmx:afterSwap', function(event) {

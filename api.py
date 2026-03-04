@@ -427,7 +427,7 @@ class ExecuteToolView(AssistantAPIView):
                 'requires_confirmation': True,
                 'result': None,
                 'pending_action': {
-                    'log_id': action_log.id,
+                    'log_id': str(action_log.id),
                     'tool_name': tool_name,
                     'tool_args': tool_args,
                     'description': f'Execute {tool_name}',

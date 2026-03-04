@@ -8,7 +8,7 @@ import base64
 import json
 import logging
 import threading
-import uuid
+import uuid as uuid_mod
 
 from django.core.cache import cache
 from django.http import HttpResponse
@@ -28,6 +28,19 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 10
 PROGRESS_CACHE_TIMEOUT = 120  # seconds
+
+
+class _UUIDEncoder(json.JSONEncoder):
+    """JSON encoder that converts UUID objects to strings."""
+    def default(self, obj):
+        if isinstance(obj, uuid_mod.UUID):
+            return str(obj)
+        return super().default(obj)
+
+
+def _json_dumps(obj):
+    """json.dumps with UUID support."""
+    return json.dumps(obj, cls=_UUIDEncoder)
 
 
 # ============================================================================
@@ -216,78 +229,124 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
             except json.JSONDecodeError:
                 tool_args = {}
 
-            _set_progress(request_id, 'tool', f'Using {tool_name}...')
-            tool = get_tool(tool_name)
-            if not tool:
-                record_feedback(
-                    event_type='missing_feature',
-                    user=user,
-                    conversation=conversation,
-                    tool_name=tool_name,
-                    user_message=original_message,
-                    details={'tool_args': tool_args},
-                )
-                tool_results.append({
-                    'type': 'function_call_output',
-                    'call_id': call_id,
-                    'output': json.dumps({"error": f"Unknown tool: {tool_name}"}),
-                })
-                continue
+            # Wrap the entire tool dispatch in try/except so that
+            # every call_id always gets a result (prevents BUG-002:
+            # "No tool output found for function call" corruption).
+            try:
+                _set_progress(request_id, 'tool', f'Using {tool_name}...')
+                tool = get_tool(tool_name)
+                if not tool:
+                    record_feedback(
+                        event_type='missing_feature',
+                        user=user,
+                        conversation=conversation,
+                        tool_name=tool_name,
+                        user_message=original_message,
+                        details={'tool_args': tool_args},
+                    )
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({"error": f"Unknown tool: {tool_name}"}),
+                    })
+                    continue
 
-            # Permission check
-            if tool.required_permission and not user.has_perm(tool.required_permission):
-                tool_results.append({
-                    'type': 'function_call_output',
-                    'call_id': call_id,
-                    'output': json.dumps({"error": f"Permission denied: {tool.required_permission}"}),
-                })
-                continue
+                # Permission check
+                if tool.required_permission and not user.has_perm(tool.required_permission):
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({"error": f"Permission denied: {tool.required_permission}"}),
+                    })
+                    continue
 
-            # Confirmation check
-            if tool.requires_confirmation:
-                action_log = AssistantActionLog.objects.create(
-                    user_id=user_id,
-                    conversation=conversation,
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    result={},
-                    success=False,
-                    confirmed=False,
-                )
-                pending_actions.append({
-                    'log_id': action_log.id,
-                    'tool_name': tool_name,
-                    'tool_args': tool_args,
-                    'description': format_confirmation_text(tool_name, tool_args),
-                })
-                tool_results.append({
-                    'type': 'function_call_output',
-                    'call_id': call_id,
-                    'output': json.dumps({
-                        "status": "pending_confirmation",
-                        "message": f"Action '{tool_name}' requires user confirmation before execution.",
-                        "action_id": action_log.id,
-                    }),
-                })
-                has_pending = True
-                break
-            else:
-                # Execute immediately (read tools)
-                try:
-                    result = tool.safe_execute(tool_args, request)
-                    is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
+                # Confirmation check
+                if tool.requires_confirmation:
                     action_log = AssistantActionLog.objects.create(
                         user_id=user_id,
                         conversation=conversation,
                         tool_name=tool_name,
                         tool_args=tool_args,
-                        result=result,
-                        success=not is_error,
-                        confirmed=True,
-                        error_message=result.get('error', '') if is_error else '',
+                        result={},
+                        success=False,
+                        confirmed=False,
                     )
-                    # Feedback: tool_error
-                    if is_error:
+                    pending_actions.append({
+                        'log_id': str(action_log.id),
+                        'tool_name': tool_name,
+                        'tool_args': tool_args,
+                        'description': format_confirmation_text(tool_name, tool_args),
+                    })
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({
+                            "status": "pending_confirmation",
+                            "message": f"Action '{tool_name}' requires user confirmation before execution.",
+                            "action_id": str(action_log.id),
+                        }),
+                    })
+                    has_pending = True
+                    break
+                else:
+                    # Execute immediately (read tools)
+                    try:
+                        result = tool.safe_execute(tool_args, request)
+                        is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
+                        action_log = AssistantActionLog.objects.create(
+                            user_id=user_id,
+                            conversation=conversation,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            result=result,
+                            success=not is_error,
+                            confirmed=True,
+                            error_message=result.get('error', '') if is_error else '',
+                        )
+                        # Feedback: tool_error
+                        if is_error:
+                            record_feedback(
+                                event_type='tool_error',
+                                user=user,
+                                conversation=conversation,
+                                action_log=action_log,
+                                tool_name=tool_name,
+                                user_message=original_message,
+                                details={'error': result.get('error', ''), 'tool_args': tool_args},
+                            )
+                        # Feedback: zero_results
+                        if (
+                            tool_name == 'search_across_modules'
+                            and isinstance(result, dict)
+                            and result.get('total_results') == 0
+                        ):
+                            record_feedback(
+                                event_type='zero_results',
+                                user=user,
+                                conversation=conversation,
+                                action_log=action_log,
+                                tool_name=tool_name,
+                                user_message=original_message,
+                                details={'query': result.get('query', tool_args.get('query', ''))},
+                            )
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps(result),
+                        })
+                    except Exception as e:
+                        logger.error(f"[ASSISTANT] Tool {tool_name} error: {e}", exc_info=True)
+                        action_log = AssistantActionLog.objects.create(
+                            user_id=user_id,
+                            conversation=conversation,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            result={"error": str(e)},
+                            success=False,
+                            confirmed=True,
+                            error_message=str(e),
+                        )
+                        # Feedback: tool_error (exception)
                         record_feedback(
                             event_type='tool_error',
                             user=user,
@@ -295,55 +354,21 @@ def run_agentic_loop(user, conversation, openai_input, context, request,
                             action_log=action_log,
                             tool_name=tool_name,
                             user_message=original_message,
-                            details={'error': result.get('error', ''), 'tool_args': tool_args},
+                            details={'error': str(e), 'tool_args': tool_args},
                         )
-                    # Feedback: zero_results
-                    if (
-                        tool_name == 'search_across_modules'
-                        and isinstance(result, dict)
-                        and result.get('total_results') == 0
-                    ):
-                        record_feedback(
-                            event_type='zero_results',
-                            user=user,
-                            conversation=conversation,
-                            action_log=action_log,
-                            tool_name=tool_name,
-                            user_message=original_message,
-                            details={'query': result.get('query', tool_args.get('query', ''))},
-                        )
-                    tool_results.append({
-                        'type': 'function_call_output',
-                        'call_id': call_id,
-                        'output': json.dumps(result),
-                    })
-                except Exception as e:
-                    logger.error(f"[ASSISTANT] Tool {tool_name} error: {e}", exc_info=True)
-                    action_log = AssistantActionLog.objects.create(
-                        user_id=user_id,
-                        conversation=conversation,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        result={"error": str(e)},
-                        success=False,
-                        confirmed=True,
-                        error_message=str(e),
-                    )
-                    # Feedback: tool_error (exception)
-                    record_feedback(
-                        event_type='tool_error',
-                        user=user,
-                        conversation=conversation,
-                        action_log=action_log,
-                        tool_name=tool_name,
-                        user_message=original_message,
-                        details={'error': str(e), 'tool_args': tool_args},
-                    )
-                    tool_results.append({
-                        'type': 'function_call_output',
-                        'call_id': call_id,
-                        'output': json.dumps({"error": str(e)}),
-                    })
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": str(e)}),
+                        })
+            except Exception as e:
+                # Safety net: guarantee every call_id gets a response
+                logger.error(f"[ASSISTANT] Unexpected error processing tool {tool_name}: {e}", exc_info=True)
+                tool_results.append({
+                    'type': 'function_call_output',
+                    'call_id': call_id,
+                    'output': _json_dumps({"error": f"Internal error processing {tool_name}"}),
+                })
 
         # If pending, send results back for one more iteration to get description
         if has_pending:
@@ -470,7 +495,7 @@ def chat(request):
     _track_conversation_message(conversation, message)
 
     # Generate a request_id for progress tracking
-    request_id = uuid.uuid4().hex[:16]
+    request_id = uuid_mod.uuid4().hex[:16]
 
     # Capture session data needed by the background thread
     session_data = dict(request.session)
@@ -491,12 +516,15 @@ def chat(request):
             cache.set(f'assistant_result_{request_id}', result, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'complete', '')
         except AgenticLoopError as e:
+            # AgenticLoopError has user-facing messages (already sanitized)
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', str(e))
         except Exception as e:
             logger.error(f"[ASSISTANT] Background error: {e}", exc_info=True)
-            cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', str(e))
+            # Show friendly message to user, log technical details
+            friendly_msg = "Something went wrong. Please try again or start a new conversation."
+            cache.set(f'assistant_result_{request_id}', {'error': friendly_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', friendly_msg)
 
     # Start background thread
     thread = threading.Thread(target=_background_task, daemon=True)
@@ -565,7 +593,7 @@ def poll_progress(request, request_id):
         resp = HttpResponse(''.join(html_parts))
         if result.get('tier_info'):
             resp['X-Assistant-Tier'] = result['tier_info'].get('tier', '')
-            resp['X-Assistant-Usage'] = json.dumps({
+            resp['X-Assistant-Usage'] = _json_dumps({
                 'sessions_used': result['tier_info'].get('sessions_used', 0),
                 'sessions_limit': result['tier_info'].get('sessions_limit', 0),
                 'tier_name': result['tier_info'].get('tier_name', ''),
@@ -730,6 +758,8 @@ def _call_cloud_proxy(request, input_data, instructions, tools,
     tier/usage data from response headers (or None).
     """
     import requests as http_requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
     from apps.configuration.models import HubConfig
 
     config = HubConfig.get_solo()
@@ -739,7 +769,7 @@ def _call_cloud_proxy(request, input_data, instructions, tools,
         )
 
     from django.conf import settings
-    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
+    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
 
     payload = {
         'input': input_data,
@@ -755,14 +785,19 @@ def _call_cloud_proxy(request, input_data, instructions, tools,
     if new_session:
         payload['new_session'] = True
 
-    response = http_requests.post(
+    # Use session with retry for resilience against transient failures
+    session = http_requests.Session()
+    retry = Retry(total=1, backoff_factor=0.5, status_forcelist=[502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retry))
+
+    response = session.post(
         f"{base_url}/api/hubs/me/assistant/chat/",
         json=payload,
         headers={
             'Authorization': f'Bearer {config.hub_jwt}',
             'Content-Type': 'application/json',
         },
-        timeout=60,
+        timeout=90,  # LLM responses can take time
     )
 
     if response.status_code != 200:
