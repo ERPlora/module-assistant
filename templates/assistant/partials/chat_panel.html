@@ -107,7 +107,7 @@
     #file-preview-icon.active { display: inline; }
 </style>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 (function() {
     // Always update the URL (may change between swaps in dev)
     window._chatUrl = '{% url "assistant:chat_message" %}';
