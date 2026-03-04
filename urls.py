@@ -5,12 +5,13 @@ app_name = 'assistant'
 
 urlpatterns = [
     # Pages (GET)
-    path('', views.chat_page, name='chat'),
+    path('', views.chat_page, name='index'),
+    path('chat/', views.chat_page, name='chat'),
     path('history/', views.history_page, name='history'),
     path('logs/', views.logs_page, name='logs'),
 
     # API (POST)
-    path('chat/', views.chat, name='chat_message'),
+    path('chat/send/', views.chat, name='chat_message'),
     path('poll/<str:request_id>/', views.poll_progress, name='poll_progress'),
     path('confirm/<int:log_id>/', views.confirm_action, name='confirm_action'),
     path('cancel/<int:log_id>/', views.cancel_action, name='cancel_action'),
