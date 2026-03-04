@@ -797,7 +797,7 @@ def _call_cloud_proxy(request, input_data, instructions, tools,
             'Authorization': f'Bearer {config.hub_jwt}',
             'Content-Type': 'application/json',
         },
-        timeout=90,  # LLM responses can take time
+        timeout=300,  # LLM responses can take time (agentic loops need more)
     )
 
     if response.status_code != 200:
