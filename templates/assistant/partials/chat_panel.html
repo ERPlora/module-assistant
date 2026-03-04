@@ -109,15 +109,17 @@
 
 <script>
 (function() {
-    var chatUrl = '{% url "assistant:chat_message" %}';
-    var chatFileData = null;
+    // Always update the URL (may change between swaps in dev)
+    window._chatUrl = '{% url "assistant:chat_message" %}';
+    // Reset file attachment on each load
+    window._chatFileData = null;
 
-    // Remove any previously registered chat listeners (in case of re-swap)
+    // Register document-level listeners only once
     if (window._chatListenersAttached) return;
     window._chatListenersAttached = true;
 
     function clearFileAttachment() {
-        chatFileData = null;
+        window._chatFileData = null;
         var fi = document.getElementById('chat-file');
         if (fi) fi.value = '';
         var fp = document.getElementById('file-preview');
@@ -130,17 +132,18 @@
 
     function submitChat() {
         var input = document.getElementById('chat-input');
+        if (!input) return;
         var msg = input.value.trim();
-        if (!msg && !chatFileData) return;
+        if (!msg && !window._chatFileData) return;
 
         var msgs = document.getElementById('chat-messages');
         var submitBtn = document.getElementById('chat-submit');
 
         var bubbleHtml = '';
-        if (chatFileData && chatFileData.type.startsWith('image/')) {
+        if (window._chatFileData && window._chatFileData.type.startsWith('image/')) {
             bubbleHtml += '<img src="' + document.getElementById('file-preview-img').src + '" class="max-h-32 rounded mb-2" alt="Attached">';
-        } else if (chatFileData) {
-            bubbleHtml += '<div class="text-sm opacity-75 mb-1">\uD83D\uDCC4 ' + chatFileData.name + '</div>';
+        } else if (window._chatFileData) {
+            bubbleHtml += '<div class="text-sm opacity-75 mb-1">\uD83D\uDCC4 ' + window._chatFileData.name + '</div>';
         }
         if (msg) bubbleHtml += msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -163,15 +166,16 @@
         var formData = new FormData();
         formData.append('message', msg);
         formData.append('conversation_id', document.getElementById('conv-id').value);
-        formData.append('context', document.querySelector('[name=context]') ? document.querySelector('[name=context]').value : 'general');
+        var ctxEl = document.querySelector('[name=context]');
+        formData.append('context', ctxEl ? ctxEl.value : 'general');
         formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
-        if (chatFileData) formData.append('file', chatFileData);
+        if (window._chatFileData) formData.append('file', window._chatFileData);
 
         input.value = '';
         input.style.height = 'auto';
         clearFileAttachment();
 
-        fetch(chatUrl, {
+        fetch(window._chatUrl, {
             method: 'POST',
             body: formData,
             headers: {'HX-Request': 'true'},
@@ -205,17 +209,13 @@
         });
     }
 
-    // --- Event delegation on document (survives HTMX swaps) ---
-
     document.addEventListener('click', function(e) {
         var t = e.target;
 
-        // Submit button
         if (t.closest('#chat-submit')) {
             submitChat();
             return;
         }
-        // New conversation
         if (t.closest('#chat-new')) {
             document.getElementById('conv-id').value = '';
             var msgs = document.getElementById('chat-messages');
@@ -241,17 +241,14 @@
             btn.classList.remove('is-loading');
             return;
         }
-        // Attach file
         if (t.closest('#chat-attach')) {
             document.getElementById('chat-file').click();
             return;
         }
-        // Remove file
         if (t.closest('#chat-file-remove')) {
             clearFileAttachment();
             return;
         }
-        // Mic
         if (t.closest('#chat-mic')) {
             var btn = t.closest('#chat-mic');
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -311,7 +308,7 @@
             e.target.value = '';
             return;
         }
-        chatFileData = file;
+        window._chatFileData = file;
         var preview = document.getElementById('file-preview');
         var previewImg = document.getElementById('file-preview-img');
         var previewIcon = document.getElementById('file-preview-icon');
