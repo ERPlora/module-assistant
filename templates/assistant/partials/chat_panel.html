@@ -112,6 +112,10 @@
     var chatUrl = '{% url "assistant:chat_message" %}';
     var chatFileData = null;
 
+    // Remove any previously registered chat listeners (in case of re-swap)
+    if (window._chatListenersAttached) return;
+    window._chatListenersAttached = true;
+
     function clearFileAttachment() {
         chatFileData = null;
         var fi = document.getElementById('chat-file');
@@ -201,67 +205,110 @@
         });
     }
 
-    // --- Bind events directly to DOM elements (no global functions needed) ---
+    // --- Event delegation on document (survives HTMX swaps) ---
 
-    document.getElementById('chat-submit').addEventListener('click', submitChat);
+    document.addEventListener('click', function(e) {
+        var t = e.target;
 
-    document.getElementById('chat-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        submitChat();
+        // Submit button
+        if (t.closest('#chat-submit')) {
+            submitChat();
+            return;
+        }
+        // New conversation
+        if (t.closest('#chat-new')) {
+            document.getElementById('conv-id').value = '';
+            var msgs = document.getElementById('chat-messages');
+            msgs.innerHTML =
+                '<div class="chat-message chat-assistant">' +
+                    '<div class="chat-bubble">' +
+                        '<p>{% trans "Hello! I\'m your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>' +
+                        '<p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>' +
+                        '<ul class="mt-1 text-sm opacity-75 list-disc pl-4">' +
+                            '<li>{% trans "What modules are available?" %}</li>' +
+                            '<li>{% trans "Show me the current configuration" %}</li>' +
+                            '<li>{% trans "Create an employee named Juan with manager role" %}</li>' +
+                        '</ul>' +
+                    '</div>' +
+                '</div>';
+            clearFileAttachment();
+            var input = document.getElementById('chat-input');
+            input.value = '';
+            input.disabled = false;
+            input.focus();
+            var btn = document.getElementById('chat-submit');
+            btn.disabled = false;
+            btn.classList.remove('is-loading');
+            return;
+        }
+        // Attach file
+        if (t.closest('#chat-attach')) {
+            document.getElementById('chat-file').click();
+            return;
+        }
+        // Remove file
+        if (t.closest('#chat-file-remove')) {
+            clearFileAttachment();
+            return;
+        }
+        // Mic
+        if (t.closest('#chat-mic')) {
+            var btn = t.closest('#chat-mic');
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            if (btn._recognition) {
+                btn._recognition.stop();
+                btn._recognition = null;
+                btn.classList.remove('recording', 'color-error');
+                return;
+            }
+            var recognition = new SR();
+            recognition.lang = document.documentElement.lang || 'en';
+            recognition.interimResults = true;
+            recognition.continuous = false;
+            var inp = document.getElementById('chat-input');
+            var beforeText = inp.value;
+            recognition.onresult = function(ev) {
+                var transcript = '';
+                for (var i = 0; i < ev.results.length; i++) transcript += ev.results[i][0].transcript;
+                inp.value = beforeText + (beforeText ? ' ' : '') + transcript;
+            };
+            recognition.onend = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            recognition.onerror = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            btn._recognition = recognition;
+            btn.classList.add('recording', 'color-error');
+            recognition.start();
+            return;
+        }
     });
 
-    document.getElementById('chat-input').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
+    document.addEventListener('keydown', function(e) {
+        if (e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             submitChat();
         }
     });
 
-    document.getElementById('chat-input').addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    document.addEventListener('input', function(e) {
+        if (e.target.id === 'chat-input') {
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        }
     });
 
-    document.getElementById('chat-new').addEventListener('click', function() {
-        document.getElementById('conv-id').value = '';
-        var msgs = document.getElementById('chat-messages');
-        msgs.innerHTML =
-            '<div class="chat-message chat-assistant">' +
-                '<div class="chat-bubble">' +
-                    '<p>{% trans "Hello! I\'m your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>' +
-                    '<p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>' +
-                    '<ul class="mt-1 text-sm opacity-75 list-disc pl-4">' +
-                        '<li>{% trans "What modules are available?" %}</li>' +
-                        '<li>{% trans "Show me the current configuration" %}</li>' +
-                        '<li>{% trans "Create an employee named Juan with manager role" %}</li>' +
-                    '</ul>' +
-                '</div>' +
-            '</div>';
-        clearFileAttachment();
-        var input = document.getElementById('chat-input');
-        input.value = '';
-        input.disabled = false;
-        input.focus();
-        document.getElementById('chat-submit').disabled = false;
-        document.getElementById('chat-submit').classList.remove('is-loading');
-    });
-
-    document.getElementById('chat-attach').addEventListener('click', function() {
-        document.getElementById('chat-file').click();
-    });
-
-    document.getElementById('chat-file').addEventListener('change', function() {
-        var file = this.files[0];
+    document.addEventListener('change', function(e) {
+        if (e.target.id !== 'chat-file') return;
+        var file = e.target.files[0];
         if (!file) return;
         if (file.size > 10 * 1024 * 1024) {
             if (window.showToast) showToast('{% trans "File too large. Maximum size is 10 MB." %}', 'warning');
-            this.value = '';
+            e.target.value = '';
             return;
         }
         var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
         if (allowed.indexOf(file.type) === -1) {
             if (window.showToast) showToast('{% trans "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF." %}', 'warning');
-            this.value = '';
+            e.target.value = '';
             return;
         }
         chatFileData = file;
@@ -272,8 +319,8 @@
         preview.classList.remove('hidden');
         if (file.type.startsWith('image/')) {
             var reader = new FileReader();
-            reader.onload = function(e) {
-                previewImg.src = e.target.result;
+            reader.onload = function(ev) {
+                previewImg.src = ev.target.result;
                 previewImg.classList.remove('hidden');
                 previewImg.classList.add('active');
             };
@@ -288,34 +335,11 @@
         }
     });
 
-    document.getElementById('chat-file-remove').addEventListener('click', clearFileAttachment);
-
-    document.getElementById('chat-mic').addEventListener('click', function() {
-        var btn = this;
-        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SR) return;
-        if (btn._recognition) {
-            btn._recognition.stop();
-            btn._recognition = null;
-            btn.classList.remove('recording', 'color-error');
-            return;
+    document.addEventListener('submit', function(e) {
+        if (e.target.id === 'chat-form') {
+            e.preventDefault();
+            submitChat();
         }
-        var recognition = new SR();
-        recognition.lang = document.documentElement.lang || 'en';
-        recognition.interimResults = true;
-        recognition.continuous = false;
-        var input = document.getElementById('chat-input');
-        var beforeText = input.value;
-        recognition.onresult = function(event) {
-            var transcript = '';
-            for (var i = 0; i < event.results.length; i++) transcript += event.results[i][0].transcript;
-            input.value = beforeText + (beforeText ? ' ' : '') + transcript;
-        };
-        recognition.onend = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
-        recognition.onerror = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
-        btn._recognition = recognition;
-        btn.classList.add('recording', 'color-error');
-        recognition.start();
     });
 
     document.addEventListener('htmx:afterSwap', function(event) {
