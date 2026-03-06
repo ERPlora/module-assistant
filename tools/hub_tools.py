@@ -250,6 +250,108 @@ class GetModuleCatalog(AssistantTool):
 
 
 @register_tool
+class InstallModules(AssistantTool):
+    name = "install_modules"
+    description = (
+        "Install modules from the Cloud marketplace in bulk. "
+        "Takes a list of module slugs (from get_module_catalog) and downloads+installs "
+        "them all at once, then schedules a server restart. "
+        "Use this when the user asks to install modules for their business. "
+        "Always call get_module_catalog first to get valid module_id slugs. "
+        "Install all needed modules in a SINGLE call to avoid multiple restarts."
+    )
+    module_id = None
+    requires_confirmation = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "module_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of module_id slugs to install (e.g., ['customers', 'inventory', 'sales'])",
+            },
+        },
+        "required": ["module_ids"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        import requests as http_requests
+        from pathlib import Path
+        from django.conf import settings
+        from django.core.cache import cache
+
+        module_ids = args.get('module_ids', [])
+        if not module_ids:
+            return {"error": "module_ids list is required"}
+
+        # Check which are already installed
+        modules_dir = Path(settings.MODULES_DIR)
+        installed_ids = set()
+        if modules_dir.exists():
+            for d in modules_dir.iterdir():
+                if d.is_dir() and not d.name.startswith('.'):
+                    installed_ids.add(d.name.lstrip('_'))
+
+        to_install = [mid for mid in module_ids if mid not in installed_ids]
+        already = [mid for mid in module_ids if mid in installed_ids]
+
+        if not to_install:
+            return {
+                "message": "All requested modules are already installed",
+                "already_installed": already,
+            }
+
+        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
+        from apps.configuration.models import HubConfig
+        hub_config = HubConfig.get_solo()
+        auth_token = hub_config.hub_jwt or hub_config.cloud_api_token
+
+        # Build install list with download URLs
+        modules_to_install = []
+        for mid in to_install:
+            modules_to_install.append({
+                'slug': mid,
+                'name': mid,
+                'download_url': f"{base_url}/api/marketplace/modules/{mid}/download/",
+            })
+
+        try:
+            from apps.core.services.module_install_service import ModuleInstallService
+
+            result = ModuleInstallService.bulk_download_and_install(
+                modules_to_install, auth_token,
+            )
+
+            if result.installed > 0:
+                # Invalidate caches
+                cache.delete('marketplace:modules_list')
+                cache.delete('marketplace:installed_modules')
+
+                ModuleInstallService.run_post_install(
+                    load_all=True, run_migrations=True, schedule_restart=True,
+                )
+
+                # Create roles for installed modules
+                try:
+                    from apps.marketplace.views import _create_roles_for_installed_modules
+                    _create_roles_for_installed_modules(to_install)
+                except Exception:
+                    pass
+
+            return {
+                "message": f"Installed {result.installed} modules. Server restart scheduled.",
+                "installed_count": result.installed,
+                "already_installed": already,
+                "errors": result.errors if result.errors else [],
+                "requires_restart": result.installed > 0,
+            }
+        except Exception as e:
+            logger.error(f"[ASSISTANT] Module install error: {e}", exc_info=True)
+            return {"error": f"Failed to install modules: {str(e)}"}
+
+
+@register_tool
 class ListRoles(AssistantTool):
     name = "list_roles"
     description = "List all roles (basic, solution, custom) with their permission wildcards and expanded permission count"
