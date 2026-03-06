@@ -90,9 +90,24 @@ class _UUIDEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _strip_none(obj):
+    """Recursively replace None values with empty strings.
+
+    Gemini's API rejects null values in tool results with
+    'Value is not a struct: null'. This sanitizes the output.
+    """
+    if obj is None:
+        return ''
+    if isinstance(obj, dict):
+        return {k: _strip_none(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_none(v) for v in obj]
+    return obj
+
+
 def _json_dumps(obj):
-    """json.dumps with UUID support."""
-    return json.dumps(obj, cls=_UUIDEncoder)
+    """json.dumps with UUID support + null sanitization for Gemini."""
+    return json.dumps(_strip_none(obj), cls=_UUIDEncoder)
 
 
 # ============================================================================
