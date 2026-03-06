@@ -500,6 +500,10 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
         else:
             break
 
+    # Fallback: if AI returned no text and no pending actions, show a message
+    if not response_text and not pending_actions:
+        response_text = "Sorry, I couldn't generate a response. Please try again or rephrase your request."
+
     return {
         'response_text': response_text,
         'pending_actions': pending_actions,
