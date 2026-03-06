@@ -273,6 +273,9 @@ class ExecutePlan(AssistantTool):
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
         "bulk_create_zones, bulk_create_tables. "
+        "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
+        "Always include 'categories' when creating products so they are properly categorized. "
+        "Create categories first (create_category), then reference them by name in create_product. "
         "All steps are executed in order. If any step fails, the error is reported "
         "but remaining steps continue. "
         "Use this after configure_business to apply the plan, or for partial execution "
@@ -285,6 +288,8 @@ class ExecutePlan(AssistantTool):
             {"action": "set_regional_config", "params": {"language": "es", "timezone": "Europe/Madrid", "country_code": "ES", "currency": "EUR"}},
             {"action": "set_business_info", "params": {"business_name": "Salón María", "business_address": "C/ Gran Vía 10, Madrid"}},
             {"action": "set_tax_config", "params": {"tax_rate": 21.0, "tax_included": True}},
+            {"action": "create_category", "params": {"name": "Bebidas"}},
+            {"action": "create_product", "params": {"name": "Agua mineral", "price": 2.00, "stock": 50, "categories": ["Bebidas"]}},
             {"action": "create_service_category", "params": {"name": "Cortes"}},
             {"action": "create_service", "params": {"name": "Corte + Peinado", "price": 25, "duration_minutes": 45, "category": "Cortes"}},
         ]},
@@ -606,12 +611,16 @@ class ExecutePlan(AssistantTool):
         )
         product.save()  # save() auto-generates SKU if empty
 
-        # Assign categories by name
+        # Assign categories by name (case-insensitive)
         category_names = params.get('categories', [])
         if category_names:
-            cats = Category.objects.filter(name__in=category_names)
-            if cats.exists():
-                product.categories.set(cats)
+            matched_cats = []
+            for cat_name in category_names:
+                cat = Category.objects.filter(name__iexact=cat_name).first()
+                if cat:
+                    matched_cats.append(cat)
+            if matched_cats:
+                product.categories.set(matched_cats)
 
         return {"id": str(product.id), "name": product.name, "sku": product.sku, "created": True}
 
