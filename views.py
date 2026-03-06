@@ -521,26 +521,28 @@ def execute_confirmed_action(action_log, request):
         action_log.save()
         return {'success': False, 'message': f'Tool {action_log.tool_name} not found', 'result': {}}
 
+    # Mark confirmed BEFORE executing — if server restarts mid-execution
+    # (e.g. install_modules), the button won't reappear on page reload
+    action_log.confirmed = True
+    action_log.save(update_fields=['confirmed'])
+
     try:
         result = tool.safe_execute(action_log.tool_args, request)
         # safe_execute returns error dict instead of raising for common errors
         if isinstance(result, dict) and 'error' in result and len(result) == 1:
             action_log.result = result
             action_log.success = False
-            action_log.confirmed = True
             action_log.error_message = result['error']
             action_log.save()
             return {'success': False, 'message': result['error'], 'result': result}
         action_log.result = result
         action_log.success = True
-        action_log.confirmed = True
         action_log.save()
         return {'success': True, 'message': 'Action confirmed and executed successfully.', 'result': result}
     except Exception as e:
         logger.error(f"[ASSISTANT] Confirm action error: {e}", exc_info=True)
         action_log.result = {"error": str(e)}
         action_log.success = False
-        action_log.confirmed = True
         action_log.error_message = str(e)
         action_log.save()
         return {'success': False, 'message': f'Error executing action: {str(e)}', 'result': {"error": str(e)}}

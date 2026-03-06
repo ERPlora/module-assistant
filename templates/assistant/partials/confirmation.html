@@ -8,10 +8,12 @@
             <div class="callout-text">{{ description }}</div>
         </div>
     </div>
-    <div class="flex gap-2 mt-2">
+    <div class="flex gap-2 mt-2" id="confirmation-buttons-{{ log_id }}">
         <button hx-post="{% url 'assistant:confirm_action' log_id %}"
                 hx-target="#confirmation-{{ log_id }}"
                 hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                hx-on::before-request="this.closest('.flex').querySelectorAll('button').forEach(b => b.disabled = true); this.innerHTML = '<span class=\'loading loading-sm\'></span> {% trans "Executing..." %}';"
                 class="btn btn-sm color-primary">
             {% icon "checkmark-outline" %}
             {% trans "Confirm" %}
@@ -19,6 +21,7 @@
         <button hx-post="{% url 'assistant:cancel_action' log_id %}"
                 hx-target="#confirmation-{{ log_id }}"
                 hx-swap="outerHTML"
+                hx-disabled-elt="this"
                 class="btn btn-sm btn-outline">
             {% icon "close-outline" %}
             {% trans "Cancel" %}
