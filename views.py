@@ -5,6 +5,7 @@ Handles chat page rendering, message processing with agentic loop,
 and action confirmation. Supports HTMX polling for streaming progress.
 """
 import base64
+import hashlib
 import json
 import logging
 import threading
@@ -27,7 +28,58 @@ from .feedback import record_feedback
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 10
+MAX_IDENTICAL_CALLS = 2  # max times same tool+args can repeat
 PROGRESS_CACHE_TIMEOUT = 120  # seconds
+
+
+def _validate_tool_args(tool, tool_args):
+    """
+    Validate tool arguments against the tool's JSON Schema.
+
+    Returns None if valid, or a descriptive error string if invalid.
+    """
+    schema = tool.parameters
+    if not schema:
+        return None
+
+    # Check required fields
+    required = schema.get('required', [])
+    missing = [f for f in required if f not in tool_args]
+    if missing:
+        return f"Missing required fields: {', '.join(missing)}"
+
+    # Check for unknown fields when additionalProperties is false
+    if not schema.get('additionalProperties', True):
+        allowed = set(schema.get('properties', {}).keys())
+        unknown = [f for f in tool_args if f not in allowed]
+        if unknown:
+            return f"Unknown fields: {', '.join(unknown)}. Allowed: {', '.join(sorted(allowed))}"
+
+    # Validate types for provided fields
+    properties = schema.get('properties', {})
+    for field, value in tool_args.items():
+        prop_schema = properties.get(field)
+        if not prop_schema:
+            continue
+        expected_type = prop_schema.get('type')
+        if not expected_type:
+            continue
+        # Basic type check (covers most tool schemas)
+        type_map = {
+            'string': str, 'integer': int, 'number': (int, float),
+            'boolean': bool, 'array': list, 'object': dict,
+        }
+        py_type = type_map.get(expected_type)
+        if py_type and not isinstance(value, py_type):
+            return f"Field '{field}' must be {expected_type}, got {type(value).__name__}"
+
+    return None
+
+
+def _call_hash(tool_name, tool_args):
+    """Deterministic hash of a tool call for loop detection."""
+    key = json.dumps({'t': tool_name, 'a': tool_args}, sort_keys=True)
+    return hashlib.md5(key.encode()).hexdigest()
 
 
 class _UUIDEncoder(json.JSONEncoder):
@@ -153,6 +205,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     response_text = ""
     pending_actions = []
     tier_info = None
+    call_counts = {}  # {call_hash: count} for anti-loop detection
 
     _set_progress(request_id, 'thinking', 'Analyzing your request...')
 
@@ -225,7 +278,13 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
             try:
                 tool_args = json.loads(fc.get('arguments', '{}'))
             except json.JSONDecodeError:
-                tool_args = {}
+                logger.warning(f"[ASSISTANT] Malformed JSON args for {tool_name}: {fc.get('arguments', '')[:200]}")
+                tool_results.append({
+                    'type': 'function_call_output',
+                    'call_id': call_id,
+                    'output': _json_dumps({"error": f"Malformed JSON arguments for {tool_name}. Please send valid JSON."}),
+                })
+                continue
 
             # Wrap the entire tool dispatch in try/except so that
             # every call_id always gets a result (prevents BUG-002:
@@ -255,6 +314,31 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         'type': 'function_call_output',
                         'call_id': call_id,
                         'output': _json_dumps({"error": f"Permission denied: {tool.required_permission}"}),
+                    })
+                    continue
+
+                # Anti-loop: detect identical tool calls
+                ch = _call_hash(tool_name, tool_args)
+                call_counts[ch] = call_counts.get(ch, 0) + 1
+                if call_counts[ch] > MAX_IDENTICAL_CALLS:
+                    logger.warning(f"[ASSISTANT] Loop detected: {tool_name} called {call_counts[ch]} times with same args")
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({
+                            "error": f"You already called {tool_name} with these same arguments. "
+                            "Use different parameters or proceed with the information you have."
+                        }),
+                    })
+                    continue
+
+                # Schema validation
+                validation_error = _validate_tool_args(tool, tool_args)
+                if validation_error:
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({"error": f"Invalid arguments for {tool_name}: {validation_error}"}),
                     })
                     continue
 
