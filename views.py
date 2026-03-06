@@ -146,8 +146,11 @@ def chat_page(request):
         user_id=request.session.get('local_user_id'),
     ).order_by('-updated_at')[:10]
 
+    last_conversation = conversations[0] if conversations else None
+
     return {
         'conversations': conversations,
+        'last_conversation': last_conversation,
     }
 
 

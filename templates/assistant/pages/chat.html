@@ -23,6 +23,33 @@
         if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
     }
 
+    var CHAT_STORAGE_KEY = 'assistant_chat_';
+
+    function saveChatToStorage() {
+        var convId = document.getElementById('conv-id');
+        var msgs = document.getElementById('chat-messages');
+        if (convId && convId.value && msgs) {
+            try {
+                sessionStorage.setItem(CHAT_STORAGE_KEY + convId.value, msgs.innerHTML);
+            } catch(e) {}
+        }
+    }
+
+    function restoreChatFromStorage() {
+        var convId = document.getElementById('conv-id');
+        var msgs = document.getElementById('chat-messages');
+        if (convId && convId.value && msgs) {
+            try {
+                var saved = sessionStorage.getItem(CHAT_STORAGE_KEY + convId.value);
+                if (saved) {
+                    msgs.innerHTML = saved;
+                    return true;
+                }
+            } catch(e) {}
+        }
+        return false;
+    }
+
     function scrollToBottom() {
         var msgs = document.getElementById('chat-messages');
         if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -69,6 +96,7 @@
             }
         }
         scrollToBottom();
+        saveChatToStorage();
         var inp = document.getElementById('chat-input');
         if (inp) inp.focus();
     };
@@ -90,6 +118,10 @@
 
     document.addEventListener('click', function(e) {
         if (e.target.closest('#chat-new')) {
+            var oldConvId = document.getElementById('conv-id').value;
+            if (oldConvId) {
+                try { sessionStorage.removeItem(CHAT_STORAGE_KEY + oldConvId); } catch(e2) {}
+            }
             document.getElementById('conv-id').value = '';
             var msgs = document.getElementById('chat-messages');
             {% trans "Hello! I'm your AI assistant. How can I help?" as new_chat_msg %}
@@ -166,8 +198,14 @@
         var msgs = document.getElementById('chat-messages');
         if (msgs && (msgs === event.detail.target || msgs.contains(event.detail.target))) {
             scrollToBottom();
+            saveChatToStorage();
         }
     });
+
+    // Restore previous conversation on page load
+    if (restoreChatFromStorage()) {
+        scrollToBottom();
+    }
 })();
 </script>
 {% endblock %}

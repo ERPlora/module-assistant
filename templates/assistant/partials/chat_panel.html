@@ -40,7 +40,7 @@
               hx-on::after-request="chatAfterRequest(this, event)"
               enctype="multipart/form-data">
             {% csrf_token %}
-            <input type="hidden" name="conversation_id" id="conv-id" value="">
+            <input type="hidden" name="conversation_id" id="conv-id" value="{{ last_conversation.id|default:'' }}">
             <input type="hidden" name="context" value="{{ context|default:'general' }}">
 
             <!-- File preview -->
