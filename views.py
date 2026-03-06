@@ -535,6 +535,18 @@ def execute_confirmed_action(action_log, request):
             action_log.error_message = result['error']
             action_log.save()
             return {'success': False, 'message': result['error'], 'result': result}
+        # Check inner success field (e.g. execute_plan returns {success: false, errors: [...]})
+        if isinstance(result, dict) and result.get('success') is False:
+            errors = result.get('errors', [])
+            error_msg = '; '.join(errors) if errors else 'Action completed with errors'
+            action_log.result = result
+            action_log.success = False
+            action_log.error_message = error_msg
+            action_log.save()
+            succeeded = result.get('succeeded', 0)
+            total = result.get('total_steps', 0)
+            msg = f'{succeeded}/{total} steps succeeded. Errors: {error_msg}' if total else error_msg
+            return {'success': False, 'message': msg, 'result': result}
         action_log.result = result
         action_log.success = True
         action_log.save()

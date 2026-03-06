@@ -271,7 +271,8 @@ class ExecutePlan(AssistantTool):
         "select_blocks, enable_module, disable_module, create_role, create_employee, "
         "create_tax_class, update_store_config, complete_setup, "
         "create_category, create_product, create_service_category, create_service, "
-        "create_payment_method, set_business_hours, create_zone, create_table. "
+        "create_payment_method, set_business_hours, create_zone, create_table, "
+        "bulk_create_zones, bulk_create_tables. "
         "All steps are executed in order. If any step fails, the error is reported "
         "but remaining steps continue. "
         "Use this after configure_business to apply the plan, or for partial execution "
@@ -379,6 +380,8 @@ class ExecutePlan(AssistantTool):
             'set_business_hours': self._set_business_hours,
             'create_zone': self._create_zone,
             'create_table': self._create_table,
+            'bulk_create_zones': self._bulk_create_zones,
+            'bulk_create_tables': self._bulk_create_tables,
         }
 
         handler = dispatch.get(action)
@@ -762,3 +765,23 @@ class ExecutePlan(AssistantTool):
             is_active=True,
         )
         return {"id": str(table.id), "number": table.number, "created": True}
+
+    def _bulk_create_zones(self, params):
+        """Create multiple zones at once. params: {zones: [{name, description?, color?}]}"""
+        zones_data = params.get('zones', [])
+        if not zones_data:
+            raise ValueError("No zones provided")
+        results = []
+        for z in zones_data:
+            results.append(self._create_zone(z))
+        return {"created": len([r for r in results if r.get('created')]), "results": results}
+
+    def _bulk_create_tables(self, params):
+        """Create multiple tables at once. params: {tables: [{number, zone?, capacity?, shape?}]}"""
+        tables_data = params.get('tables', [])
+        if not tables_data:
+            raise ValueError("No tables provided")
+        results = []
+        for t in tables_data:
+            results.append(self._create_table(t))
+        return {"created": len([r for r in results if r.get('created')]), "results": results}
