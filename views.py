@@ -64,6 +64,14 @@ def _validate_tool_args(tool, tool_args):
         expected_type = prop_schema.get('type')
         if not expected_type:
             continue
+        # Handle union types like ["string", "null"]
+        if isinstance(expected_type, list):
+            if value is None and 'null' in expected_type:
+                continue
+            real_types = [t for t in expected_type if t != 'null']
+            expected_type = real_types[0] if real_types else None
+            if not expected_type:
+                continue
         # Basic type check (covers most tool schemas)
         type_map = {
             'string': str, 'integer': int, 'number': (int, float),
