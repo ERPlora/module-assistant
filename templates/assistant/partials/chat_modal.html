@@ -1,0 +1,42 @@
+{% load i18n djicons %}
+
+<div x-data="{ open: false }"
+     @open-assistant-chat.window="open = true"
+     @keydown.escape.window="open = false"
+     x-cloak>
+    <div class="modal-backdrop" :data-state="open ? 'open' : 'closed'" @click.self="open = false">
+        <div class="modal glass" style="max-width: 500px; height: 85vh;">
+            <div class="modal-header">
+                <h2 class="modal-title">{% trans "AI Assistant" %}</h2>
+                <div class="flex gap-1">
+                    <a href="/m/assistant/"
+                       hx-get="/m/assistant/"
+                       hx-target="#main-content-area"
+                       hx-push-url="true"
+                       @click="open = false"
+                       class="btn btn-ghost btn-sm"
+                       title="{% trans 'Open full page' %}">
+                        {% icon "expand-outline" %}
+                    </a>
+                    <button @click="open = false" class="modal-close">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body p-0 flex-1 overflow-hidden"
+                 id="assistant-modal-body"
+                 x-init="$watch('open', v => {
+                     if (v && !$el.dataset.loaded) {
+                         $el.dataset.loaded = '1';
+                         htmx.ajax('GET', '/m/assistant/chat/', {target: $el, swap: 'innerHTML'});
+                     }
+                 })">
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    #assistant-modal-body > div {
+        min-height: 0;
+        height: 100%;
+    }
+</style>
