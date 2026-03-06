@@ -4,3 +4,169 @@
 {% block module_content %}
 {% include "assistant/partials/chat_panel.html" %}
 {% endblock %}
+
+{% block scripts %}
+{{ block.super }}
+<script nonce="{{ csp_nonce }}">
+(function() {
+    if (window._chatListenersAttached) return;
+    window._chatListenersAttached = true;
+
+    function clearFileAttachment() {
+        var fi = document.getElementById('chat-file');
+        if (fi) fi.value = '';
+        var fp = document.getElementById('file-preview');
+        if (fp) fp.classList.add('hidden');
+        var img = document.getElementById('file-preview-img');
+        if (img) { img.classList.add('hidden'); img.classList.remove('active'); }
+        var icon = document.getElementById('file-preview-icon');
+        if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
+    }
+
+    function scrollToBottom() {
+        var msgs = document.getElementById('chat-messages');
+        if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    function setLoading(on) {
+        var btn = document.getElementById('chat-submit');
+        var inp = document.getElementById('chat-input');
+        if (!btn || !inp) return;
+        btn.disabled = on;
+        inp.disabled = on;
+        if (on) btn.classList.add('is-loading');
+        else btn.classList.remove('is-loading');
+    }
+
+    function appendUserBubble(msg) {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var html = msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-user';
+        div.innerHTML = '<div class="chat-bubble">' + html + '</div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+    }
+
+    window.chatBeforeRequest = function(form) {
+        var inp = document.getElementById('chat-input');
+        var msg = inp ? inp.value.trim() : '';
+        if (msg) appendUserBubble(msg);
+        setLoading(true);
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+    };
+
+    window.chatAfterRequest = function(form, event) {
+        setLoading(false);
+        clearFileAttachment();
+        var xhr = event && event.detail && event.detail.xhr;
+        if (xhr) {
+            var convId = xhr.getResponseHeader('X-Conversation-Id');
+            if (convId) {
+                var convInput = document.getElementById('conv-id');
+                if (convInput) convInput.value = convId;
+            }
+        }
+        scrollToBottom();
+        var inp = document.getElementById('chat-input');
+        if (inp) inp.focus();
+    };
+
+    document.addEventListener('keydown', function(e) {
+        if (e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            var form = document.getElementById('chat-form');
+            if (form && window.htmx) htmx.trigger(form, 'submit');
+        }
+    });
+
+    document.addEventListener('input', function(e) {
+        if (e.target.id === 'chat-input') {
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        }
+    });
+
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('#chat-new')) {
+            document.getElementById('conv-id').value = '';
+            var msgs = document.getElementById('chat-messages');
+            msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
+                '{% trans "Hello! I\'m your AI assistant. How can I help?" %}' +
+                '</p></div></div>';
+            clearFileAttachment();
+            setLoading(false);
+            var inp = document.getElementById('chat-input');
+            if (inp) { inp.value = ''; inp.focus(); }
+            return;
+        }
+        if (e.target.closest('#chat-attach')) { document.getElementById('chat-file').click(); return; }
+        if (e.target.closest('#chat-file-remove')) { clearFileAttachment(); return; }
+        if (e.target.closest('#chat-mic')) {
+            var btn = e.target.closest('#chat-mic');
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            if (btn._recognition) {
+                btn._recognition.stop(); btn._recognition = null;
+                btn.classList.remove('recording', 'color-error'); return;
+            }
+            var recognition = new SR();
+            recognition.lang = document.documentElement.lang || 'en';
+            recognition.interimResults = true; recognition.continuous = false;
+            var inp = document.getElementById('chat-input');
+            var beforeText = inp ? inp.value : '';
+            recognition.onresult = function(ev) {
+                var t = '';
+                for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+                if (inp) inp.value = beforeText + (beforeText ? ' ' : '') + t;
+            };
+            recognition.onend = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            recognition.onerror = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            btn._recognition = recognition;
+            btn.classList.add('recording', 'color-error');
+            recognition.start(); return;
+        }
+    });
+
+    document.addEventListener('change', function(e) {
+        if (e.target.id !== 'chat-file') return;
+        var file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+            if (window.showToast) showToast('{% trans "File too large. Maximum size is 10 MB." %}', 'warning');
+            e.target.value = ''; return;
+        }
+        var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+        if (allowed.indexOf(file.type) === -1) {
+            if (window.showToast) showToast('{% trans "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF." %}', 'warning');
+            e.target.value = ''; return;
+        }
+        var preview = document.getElementById('file-preview');
+        var previewImg = document.getElementById('file-preview-img');
+        var previewIcon = document.getElementById('file-preview-icon');
+        document.getElementById('file-preview-name').textContent = file.name;
+        preview.classList.remove('hidden');
+        if (file.type.startsWith('image/')) {
+            var reader = new FileReader();
+            reader.onload = function(ev) {
+                previewImg.src = ev.target.result;
+                previewImg.classList.remove('hidden'); previewImg.classList.add('active');
+            };
+            reader.readAsDataURL(file);
+            previewIcon.classList.add('hidden'); previewIcon.classList.remove('active');
+        } else {
+            previewImg.classList.add('hidden'); previewImg.classList.remove('active');
+            previewIcon.classList.remove('hidden'); previewIcon.classList.add('active');
+        }
+    });
+
+    document.addEventListener('htmx:afterSwap', function(event) {
+        var msgs = document.getElementById('chat-messages');
+        if (msgs && (msgs === event.detail.target || msgs.contains(event.detail.target))) {
+            scrollToBottom();
+        }
+    });
+})();
+</script>
+{% endblock %}
