@@ -92,8 +92,9 @@
         if (e.target.closest('#chat-new')) {
             document.getElementById('conv-id').value = '';
             var msgs = document.getElementById('chat-messages');
+            {% trans "Hello! I'm your AI assistant. How can I help?" as new_chat_msg %}
             msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
-                '{% trans "Hello! I\'m your AI assistant. How can I help?" %}' +
+                '{{ new_chat_msg|escapejs }}' +
                 '</p></div></div>';
             clearFileAttachment();
             setLoading(false);
