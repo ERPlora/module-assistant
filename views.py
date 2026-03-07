@@ -409,7 +409,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         }),
                     })
                     has_pending = True
-                    break
+                    continue  # process remaining tool calls instead of break
                 else:
                     # Execute immediately (read tools)
                     try:
