@@ -236,7 +236,11 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     user_id = str(user.id)
     original_message = ai_input if isinstance(ai_input, str) else ''
     instructions = build_system_prompt(request, context)
-    tools = get_tools_for_context(context, user)
+
+    # Dynamic tool loading: start with only hub core tools (module_id=None)
+    # The model can call load_module_tools to add module-specific tools
+    loaded_modules = set()
+    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
 
     # Cloud manages conversation history keyed by our own conversation.id
     conversation_id = str(conversation.id)
@@ -414,6 +418,14 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                     # Execute immediately (read tools)
                     try:
                         result = tool.safe_execute(tool_args, request)
+
+                        # Dynamic tool loading: when load_module_tools succeeds,
+                        # add requested modules and rebuild the tools list
+                        if tool_name == 'load_module_tools' and isinstance(result, dict) and 'error' not in result:
+                            for mid in tool_args.get('modules', []):
+                                loaded_modules.add(mid)
+                            tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+
                         is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
                         action_log = AssistantActionLog.objects.create(
                             user_id=user_id,

@@ -85,6 +85,13 @@ IMPORTANT: Always respond in {lang_name} (the user's configured language).
 Be concise, helpful, and proactive. Suggest next steps when appropriate.
 When you need to perform an action, use the available tools.
 
+## Dynamic Tool Loading
+You start with only hub core tools (configuration, modules, employees, roles, tax).
+To work with a specific module (e.g., inventory, sales, customers), you MUST first call `load_module_tools` with the module IDs you need.
+Example: to create products, first call `load_module_tools(modules=["inventory"])`, then use the inventory tools.
+You can load multiple modules at once: `load_module_tools(modules=["inventory", "sales", "customers"])`.
+Use `list_modules` to see which modules are installed and their IDs.
+
 ## Module Recommendations
 When a user describes their business or asks which modules they need:
 1. Use the `get_module_catalog` tool to fetch ALL available modules with descriptions, functions, and industries
@@ -172,7 +179,7 @@ Use `get_module_catalog` to see all available modules (including those not yet i
 
 
 def _tools_context(context, request):
-    """Summarize available tools grouped by module."""
+    """Summarize available core tools. Module tools are loaded on demand."""
     try:
         from assistant.tools import get_tools_for_context, TOOL_REGISTRY
         from apps.accounts.models import LocalUser
@@ -185,7 +192,8 @@ def _tools_context(context, request):
             except LocalUser.DoesNotExist:
                 pass
 
-        tools = get_tools_for_context(context, user)
+        # Only show core tools (loaded_modules=empty set)
+        tools = get_tools_for_context(context, user, loaded_modules=set())
         if not tools:
             return ''
 
@@ -197,7 +205,7 @@ def _tools_context(context, request):
             mod = getattr(tool_inst, 'module_id', None) or 'hub_core'
             by_module.setdefault(mod, []).append(tool_inst)
 
-        lines = [f"## Available Tools ({len(tools)} total)"]
+        lines = [f"## Available Tools ({len(tools)} core tools loaded)"]
         for mod in sorted(by_module.keys()):
             mod_tools = by_module[mod]
             names = []
@@ -205,6 +213,11 @@ def _tools_context(context, request):
                 suffix = ' (write)' if t.requires_confirmation else ''
                 names.append(f"{t.name}{suffix}")
             lines.append(f"- **{mod}**: {', '.join(names)}")
+
+        lines.append(
+            "\nTo access module-specific tools (inventory, sales, customers, etc.), "
+            "call `load_module_tools` with the module IDs you need."
+        )
 
         return '\n'.join(lines)
     except Exception as e:

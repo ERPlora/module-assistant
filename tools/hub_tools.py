@@ -697,6 +697,61 @@ class CreateEmployee(AssistantTool):
 
 
 @register_tool
+class LoadModuleTools(AssistantTool):
+    name = "load_module_tools"
+    description = (
+        "Load AI tools for specific modules. By default only hub core tools are available. "
+        "Call this to load tools for the modules you need to work with. "
+        "Example: to create products, first load inventory tools with load_module_tools(modules=['inventory']). "
+        "You can load multiple modules at once. "
+        "Returns the list of newly available tool names."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "modules": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of module IDs to load tools for "
+                    "(e.g., ['inventory', 'sales', 'customers']). "
+                    "Use list_modules to see available module IDs."
+                ),
+            },
+        },
+        "required": ["modules"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from assistant.tools import TOOL_REGISTRY, _get_active_module_ids
+
+        requested = args.get('modules', [])
+        if not requested:
+            return {"error": "Provide at least one module ID"}
+
+        active = set(_get_active_module_ids())
+        loaded_names = []
+        not_found = []
+
+        for mid in requested:
+            if mid not in active:
+                not_found.append(mid)
+                continue
+            # Collect tool names from this module
+            for tool in TOOL_REGISTRY.values():
+                if tool.module_id == mid:
+                    loaded_names.append(tool.name)
+
+        return {
+            "loaded_tools": loaded_names,
+            "loaded_count": len(loaded_names),
+            "not_found": not_found,
+            "message": f"Loaded {len(loaded_names)} tools from {len(requested) - len(not_found)} modules. These tools are now available for use.",
+        }
+
+
+@register_tool
 class CreateTaxClass(AssistantTool):
     name = "create_tax_class"
     description = "Create a new tax class/rate (e.g., 'IVA General 21%', 'IGIC 7%')"

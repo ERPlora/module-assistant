@@ -137,13 +137,17 @@ def discover_tools():
     logger.info(f"[ASSISTANT] Discovered {len(TOOL_REGISTRY)} tools")
 
 
-def get_tools_for_context(context='general', user=None):
+def get_tools_for_context(context='general', user=None, loaded_modules=None):
     """
     Return tool schemas filtered by context and user permissions.
 
     Args:
         context: 'general' or 'setup'
         user: LocalUser instance for permission filtering
+        loaded_modules: set of module IDs whose tools should be included.
+            If None, all active module tools are included (legacy behavior).
+            If a set, only hub core tools (module_id=None) and tools from
+            the specified modules are included.
     """
     if not TOOL_REGISTRY:
         discover_tools()
@@ -155,6 +159,11 @@ def get_tools_for_context(context='general', user=None):
         # Only include if the tool's module is active (or hub core)
         if tool.module_id and tool.module_id not in active_modules:
             continue
+
+        # Dynamic loading: if loaded_modules is set, filter non-core tools
+        if loaded_modules is not None and tool.module_id:
+            if tool.module_id not in loaded_modules:
+                continue
 
         # Setup-only tools only in setup context
         if tool.setup_only and context != 'setup':
