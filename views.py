@@ -492,10 +492,10 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                     'output': _json_dumps({"error": f"Internal error processing {tool_name}"}),
                 })
 
-        # If pending, send results back for one more iteration to get description
+        # If pending confirmations, stop the loop and return them to the frontend.
+        # format_confirmation_text() already provides descriptions for each action.
         if has_pending:
-            ai_input = tool_results
-            continue
+            break
 
         # If we only have tool results (no pending), send them back for next iteration
         if tool_results:
