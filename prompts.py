@@ -452,4 +452,6 @@ def _safety_rules():
 4. If unsure about what the user wants, ask for clarification
 5. When creating bulk data (products, employees), confirm the full list before executing
 6. Never expose sensitive data (PINs, tokens, API keys)
-7. If an operation fails, explain what went wrong and suggest alternatives"""
+7. If an operation fails, explain what went wrong and suggest alternatives
+8. CRITICAL: When the user confirms a plan you presented, execute EXACTLY what you described.
+   Use the same names, prices, quantities, and details. Never substitute generic data for specific details."""

@@ -278,8 +278,11 @@ class ExecutePlan(AssistantTool):
         "Create categories first (create_category), then reference them by name in create_product. "
         "All steps are executed in order. If any step fails, the error is reported "
         "but remaining steps continue. "
-        "Use this after configure_business to apply the plan, or for partial execution "
-        "(e.g., just installing modules or just creating roles)."
+        "Use this after presenting a plan to the user, or for partial execution "
+        "(e.g., just installing modules or just creating roles). "
+        "CRITICAL: When the user confirms a plan you presented, the steps in execute_plan "
+        "MUST match EXACTLY what you described — same names, same prices, same quantities. "
+        "Never substitute generic or simplified data for the specific details you showed the user."
     )
     requires_confirmation = True  # Single confirmation for ALL steps
     required_permission = "assistant.use_setup_mode"
@@ -705,8 +708,11 @@ class ExecutePlan(AssistantTool):
         from datetime import time
         from schedules.models import BusinessHours
         hours_list = params.get('hours', [])
+        # Support single-day format (from set_business_hours action)
+        if not hours_list and 'day_of_week' in params:
+            hours_list = [params]
         if not hours_list:
-            raise ValueError("'hours' array is required")
+            raise ValueError("'hours' array is required, or provide 'day_of_week' for a single day")
 
         updated = []
         for h in hours_list:
