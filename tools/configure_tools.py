@@ -272,7 +272,7 @@ class ExecutePlan(AssistantTool):
         "create_tax_class, update_store_config, complete_setup, "
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
-        "bulk_create_zones, bulk_create_tables. "
+        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
@@ -387,6 +387,7 @@ class ExecutePlan(AssistantTool):
             'create_table': self._create_table,
             'bulk_create_zones': self._bulk_create_zones,
             'bulk_create_tables': self._bulk_create_tables,
+            'bulk_set_business_hours': self._set_business_hours,
         }
 
         handler = dispatch.get(action)
