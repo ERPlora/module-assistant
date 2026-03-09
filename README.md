@@ -1,81 +1,161 @@
-# AI Assistant Module
+# AI Assistant
 
-AI-powered business assistant for ERPlora Hub with contextual tool calling across all modules.
+## Overview
 
-## Features
-
-- Agentic chat with tool calling (280+ tools across 80 modules)
-- Voice input support
-- Conversation history and context management
-- Action confirmation for write operations
-- Anti-loop detection and JSON Schema validation for tool calls
-- Automatic feedback collection (tool errors, zero results, missing features)
-- Tiered subscription plans: Basic, Pro, Enterprise
-- HTMX polling for streaming progress updates
-
-## Installation
-
-This module is installed automatically via the ERPlora Marketplace.
-
-## Configuration
-
-Requires an active assistant subscription tier configured in the Cloud portal.
-
-## Usage
-
-Access via: **Menu > AI Assistant**
-
-### Views
-
-| View | URL | Description |
-|------|-----|-------------|
-| Chat | `/m/assistant/` | Interactive chat interface |
-| Chat (alias) | `/m/assistant/chat/` | Same as above |
-| History | `/m/assistant/history/` | Browse and resume previous conversations |
-| Action Log | `/m/assistant/logs/` | Audit trail of all assistant-executed actions |
-
-### API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/m/assistant/chat/send/` | POST | Send message to assistant (triggers agentic loop) |
-| `/m/assistant/poll/<request_id>/` | GET | Poll for progress updates (HTMX polling) |
-| `/m/assistant/confirm/<log_id>/` | POST | Confirm a pending write action |
-| `/m/assistant/cancel/<log_id>/` | POST | Cancel a pending write action |
-
-## Architecture
-
-- **Tool discovery**: Auto-discovers `ai_tools.py` in every active module
-- **Agentic loop**: Up to 10 iterations per request with anti-loop detection
-- **Schema validation**: Validates tool arguments against JSON Schema before execution
-- **Proxy**: Cloud proxy converts OpenAI format to Gemini API
-- **Models**: Gemini 2.5 Flash (Basic/Pro), Gemini 2.5 Pro (Enterprise)
+| Property | Value |
+|----------|-------|
+| **Module ID** | `assistant` |
+| **Version** | `1.0.0` |
+| **Icon** | `sparkles-outline` |
+| **Dependencies** | None |
 
 ## Models
 
-| Model | Description |
-|-------|-------------|
-| `AssistantConversation` | Conversation state per user (context, title, summary, message count) |
-| `AssistantActionLog` | Audit trail for executed actions (tool name, args, result, confirmed status) |
-| `AssistantFeedback` | Automatic feedback events (tool errors, zero results, missing features) |
+### `AssistantConversation`
+
+Tracks conversation state per user.
+
+| Field | Type | Details |
+|-------|------|---------|
+| `user` | ForeignKey | → `accounts.LocalUser`, on_delete=CASCADE |
+| `ai_conversation_id` | CharField | max_length=255, optional |
+| `context` | CharField | max_length=50 |
+| `title` | CharField | max_length=200, optional |
+| `summary` | TextField | optional |
+| `first_message` | TextField | optional |
+| `message_count` | PositiveIntegerField |  |
+
+### `AssistantActionLog`
+
+Audit trail for all assistant-executed actions.
+
+| Field | Type | Details |
+|-------|------|---------|
+| `user` | ForeignKey | → `accounts.LocalUser`, on_delete=CASCADE |
+| `conversation` | ForeignKey | → `assistant.AssistantConversation`, on_delete=SET_NULL, optional |
+| `tool_name` | CharField | max_length=100 |
+| `tool_args` | JSONField |  |
+| `result` | JSONField |  |
+| `success` | BooleanField |  |
+| `confirmed` | BooleanField |  |
+| `error_message` | TextField | optional |
+
+### `AssistantFeedback`
+
+Tracks feedback events for product improvement.
+
+Automatically recorded when tools fail, searches return zero results,
+or users request features that don't exist. Sent to Cloud for
+analysis and email notification to the ERPlora team.
+
+| Field | Type | Details |
+|-------|------|---------|
+| `event_type` | CharField | max_length=30, choices: tool_error, zero_results, missing_feature |
+| `tool_name` | CharField | max_length=100, optional |
+| `user_message` | TextField | optional |
+| `details` | JSONField |  |
+| `user` | ForeignKey | → `accounts.LocalUser`, on_delete=CASCADE |
+| `conversation` | ForeignKey | → `assistant.AssistantConversation`, on_delete=SET_NULL, optional |
+| `action_log` | ForeignKey | → `assistant.AssistantActionLog`, on_delete=SET_NULL, optional |
+| `sent_to_cloud` | BooleanField |  |
+| `cloud_error` | CharField | max_length=255, optional |
+
+## Cross-Module Relationships
+
+| From | Field | To | on_delete | Nullable |
+|------|-------|----|-----------|----------|
+| `AssistantConversation` | `user` | `accounts.LocalUser` | CASCADE | No |
+| `AssistantActionLog` | `user` | `accounts.LocalUser` | CASCADE | No |
+| `AssistantActionLog` | `conversation` | `assistant.AssistantConversation` | SET_NULL | Yes |
+| `AssistantFeedback` | `user` | `accounts.LocalUser` | CASCADE | No |
+| `AssistantFeedback` | `conversation` | `assistant.AssistantConversation` | SET_NULL | Yes |
+| `AssistantFeedback` | `action_log` | `assistant.AssistantActionLog` | SET_NULL | Yes |
+
+## URL Endpoints
+
+Base path: `/m/assistant/`
+
+| Path | Name | Method |
+|------|------|--------|
+| `(root)` | `index` | GET |
+| `chat/` | `chat` | GET |
+| `history/` | `history` | GET |
+| `logs/` | `logs` | GET |
+| `chat/send/` | `chat_message` | GET |
+| `poll/<str:request_id>/` | `poll_progress` | GET |
+| `confirm/<str:log_id>/` | `confirm_action` | GET |
+| `cancel/<str:log_id>/` | `cancel_action` | GET |
 
 ## Permissions
 
 | Permission | Description |
 |------------|-------------|
-| `assistant.use_chat` | Use the chat interface |
-| `assistant.use_setup_mode` | Use setup mode for initial configuration |
-| `assistant.view_logs` | View action log |
-| `assistant.manage_settings` | Manage assistant settings |
+| `assistant.use_chat` | Use Chat |
+| `assistant.use_setup_mode` | Use Setup Mode |
+| `assistant.view_logs` | View Logs |
+| `assistant.manage_settings` | Manage Settings |
 
-## Dependencies
+**Role assignments:**
 
-None (integrates with all active modules via tool discovery)
+- **admin**: All permissions
+- **manager**: `use_chat`, `use_setup_mode`, `view_logs`
+- **employee**: `use_chat`, `use_setup_mode`, `view_logs`
 
-## License
+## Navigation
 
-MIT
+| View | Icon | ID | Fullpage |
+|------|------|----|----------|
+| Chat | `chatbubbles-outline` | `chat` | No |
+| History | `time-outline` | `history` | No |
+| Action Log | `list-outline` | `logs` | No |
 
-## Author
+## File Structure
 
-ERPlora Team - support@erplora.com
+```
+README.md
+__init__.py
+admin.py
+api.py
+apps.py
+feedback.py
+migrations/
+  0001_initial.py
+  __init__.py
+models.py
+module.py
+prompts.py
+static/
+  assistant/
+    js/
+templates/
+  assistant/
+    pages/
+      chat.html
+      history.html
+      logs.html
+    partials/
+      chat_modal.html
+      chat_panel.html
+      confirmation.html
+      history_content.html
+      logs_content.html
+      message.html
+      progress.html
+tests/
+  __init__.py
+  conftest.py
+  test_analytics.py
+  test_feedback.py
+  test_models.py
+  test_prompts.py
+  test_tools.py
+  test_views.py
+tools/
+  __init__.py
+  analytics_tools.py
+  configure_tools.py
+  hub_tools.py
+  setup_tools.py
+urls.py
+views.py
+```
