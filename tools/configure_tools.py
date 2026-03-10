@@ -543,12 +543,15 @@ class ExecutePlan(AssistantTool):
         return {"id": str(table.id), "number": table.number, "created": True}
 
     def _bulk_create_zones(self, params):
-        """Create multiple zones at once. params: {zones: [{name, description?, color?}]}"""
+        """Create multiple zones at once. params: {zones: [{name, description?, color?}]} or {zones: ["name1", "name2"]}"""
         zones_data = params.get('zones', [])
         if not zones_data:
             raise ValueError("No zones provided")
         results = []
         for z in zones_data:
+            # Accept both string and dict format
+            if isinstance(z, str):
+                z = {'name': z}
             results.append(self._create_zone(z))
         return {"created": len([r for r in results if r.get('created')]), "results": results}
 
