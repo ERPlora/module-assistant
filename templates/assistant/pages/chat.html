@@ -84,6 +84,32 @@
         if (inp) { inp.value = ''; inp.style.height = 'auto'; }
     };
 
+    function updateTierInfo(xhr) {
+        var usage = xhr && xhr.getResponseHeader('X-Assistant-Usage');
+        if (!usage) return;
+        try {
+            var data = JSON.parse(usage);
+            var badge = document.getElementById('tier-badge');
+            var usageEl = document.getElementById('tier-usage');
+            if (badge && data.tier) {
+                badge.textContent = data.tier;
+                badge.className = 'badge badge-sm' + (data.tier === 'free' ? ' badge-outline' : ' color-primary');
+            }
+            if (usageEl && data.messages_limit > 0) {
+                var used = data.messages_used || 0;
+                var limit = data.messages_limit;
+                var remaining = Math.max(0, limit - used);
+                usageEl.textContent = remaining + '/' + limit;
+                usageEl.classList.remove('hidden');
+                if (remaining <= 10) usageEl.classList.add('color-warning');
+                if (remaining === 0) {
+                    usageEl.classList.remove('color-warning');
+                    usageEl.classList.add('color-error');
+                }
+            }
+        } catch(e) {}
+    }
+
     window.chatAfterRequest = function(form, event) {
         setLoading(false);
         clearFileAttachment();
@@ -94,6 +120,7 @@
                 var convInput = document.getElementById('conv-id');
                 if (convInput) convInput.value = convId;
             }
+            updateTierInfo(xhr);
         }
         scrollToBottom();
         saveChatToStorage();

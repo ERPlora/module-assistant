@@ -272,7 +272,7 @@ class ExecutePlan(AssistantTool):
         "create_tax_class, update_store_config, complete_setup, "
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
-        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours. "
+        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
@@ -391,6 +391,7 @@ class ExecutePlan(AssistantTool):
             'bulk_create_zones': self._bulk_create_zones,
             'bulk_create_tables': self._bulk_create_tables,
             'bulk_set_business_hours': self._set_business_hours,
+            'install_blueprint': self._install_blueprint,
         }
 
         handler = dispatch.get(action)
@@ -572,6 +573,36 @@ class ExecutePlan(AssistantTool):
         store_config.is_configured = True
         store_config.save()
         return {"message": "Setup completed"}
+
+    def _install_blueprint(self, params):
+        """Install modules from blueprint for given business type codes."""
+        from apps.configuration.models import HubConfig
+        from apps.core.services.blueprint_service import BlueprintService
+
+        hub_config = HubConfig.get_solo()
+        type_codes = params.get('type_codes', [])
+        sector = params.get('sector', '')
+
+        if not type_codes:
+            raise ValueError("type_codes is required (list of business type codes)")
+
+        # Update hub config with selected types
+        hub_config.selected_business_types = type_codes
+        if sector:
+            hub_config.business_sector = sector
+        hub_config.save(update_fields=['selected_business_types', 'business_sector'])
+
+        # Install blueprint (compute modules → install → create roles → import seeds)
+        result = BlueprintService.install_blueprint(
+            hub_config, type_codes, include_recommended=True,
+        )
+
+        return {
+            "message": f"Blueprint installed for {type_codes}",
+            "modules_installed": result.get('modules_installed', 0),
+            "roles_created": result.get('roles_created', 0),
+            "result": result,
+        }
 
     # ── Inventory: Categories & Products ───────────────────────────
 

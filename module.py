@@ -13,11 +13,6 @@ MODULE_ICON = 'sparkles-outline'
 MODULE_FUNCTIONS = ['utility', 'ai']
 MODULE_COLOR = '#7c3aed'
 
-PRICING = {
-    'type': 'subscription',
-    'subscription_price_monthly': 5.00,
-}
-
 COMPATIBILITY = {
     'min_erplora_version': '1.0.0',
 }

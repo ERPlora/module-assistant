@@ -148,9 +148,16 @@ def chat_page(request):
 
     last_conversation = conversations[0] if conversations else None
 
+    # Detect setup context (redirected from StoreConfigCheckMiddleware)
+    from apps.configuration.models import HubConfig
+    hub_config = HubConfig.get_config()
+    context = 'setup' if (request.GET.get('context') == 'setup' or not hub_config.is_configured) else 'general'
+
     return {
         'conversations': conversations,
         'last_conversation': last_conversation,
+        'chat_context': context,
+        'is_setup_mode': context == 'setup',
     }
 
 

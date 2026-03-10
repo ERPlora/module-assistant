@@ -64,50 +64,76 @@ class GetStoreConfig(AssistantTool):
 
 
 @register_tool
-class ListAvailableBlocks(AssistantTool):
-    name = "list_available_blocks"
-    description = "List all available functional blocks from Cloud marketplace. Returns block names, descriptions, and categories."
+class ListBusinessTypes(AssistantTool):
+    name = "list_business_types"
+    description = (
+        "List available business types from the Blueprint system, grouped by sector. "
+        "Use this to help the user choose their business type during setup. "
+        "Optionally filter by sector code (e.g., 'hospitality', 'retail', 'personal_services')."
+    )
     parameters = {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "sector": {
+                "type": "string",
+                "description": "Optional sector code to filter (e.g., 'hospitality'). If empty, returns all sectors with their types.",
+            },
+            "language": {
+                "type": "string",
+                "description": "Language code for translations (e.g., 'es', 'en'). Defaults to hub language.",
+            },
+        },
         "required": [],
         "additionalProperties": False,
     }
 
     def execute(self, args, request):
-        import requests as http_requests
-        from django.conf import settings
+        from apps.core.services.blueprint_service import BlueprintService
+        from apps.configuration.models import HubConfig
 
-        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
+        hub_config = HubConfig.get_solo()
+        language = args.get('language') or hub_config.language or 'en'
+        sector_filter = args.get('sector', '')
+
         try:
-            resp = http_requests.get(
-                f"{base_url}/api/marketplace/solutions/",
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                blocks = resp.json()
-                # Return simplified list
-                return {
-                    "blocks": [
+            # Get sectors
+            sectors_data = BlueprintService.get_sectors(language=language)
+            sectors = sectors_data.get('sectors', []) if isinstance(sectors_data, dict) else sectors_data
+
+            result = []
+            for sector in sectors:
+                sector_code = sector.get('code', '') if isinstance(sector, dict) else sector
+                sector_name = sector.get('name', sector_code) if isinstance(sector, dict) else sector_code
+
+                if sector_filter and sector_code != sector_filter:
+                    continue
+
+                # Get types for this sector
+                types_data = BlueprintService.get_types(sector=sector_code, language=language)
+                types_list = types_data if isinstance(types_data, list) else []
+
+                result.append({
+                    "sector": sector_code,
+                    "sector_name": sector_name,
+                    "types": [
                         {
-                            "slug": b.get("slug", ""),
-                            "name": b.get("name", ""),
-                            "tagline": b.get("tagline", ""),
-                            "block_type": b.get("block_type", ""),
-                            "icon": b.get("icon", ""),
+                            "code": t.get("code", ""),
+                            "name": t.get("name", ""),
+                            "description": t.get("description", ""),
                         }
-                        for b in (blocks if isinstance(blocks, list) else blocks.get("results", []))
-                    ]
-                }
-            return {"error": f"Cloud API returned {resp.status_code}"}
+                        for t in types_list
+                    ],
+                })
+
+            return {"sectors": result, "total_types": sum(len(s["types"]) for s in result)}
         except Exception as e:
-            return {"error": f"Failed to fetch blocks: {str(e)}"}
+            return {"error": f"Failed to fetch business types: {str(e)}"}
 
 
 @register_tool
-class GetSelectedBlocks(AssistantTool):
-    name = "get_selected_blocks"
-    description = "Get the functional blocks currently selected for this hub"
+class GetSelectedBusinessTypes(AssistantTool):
+    name = "get_selected_business_types"
+    description = "Get the business types currently selected for this hub"
     parameters = {
         "type": "object",
         "properties": {},
@@ -119,8 +145,8 @@ class GetSelectedBlocks(AssistantTool):
         from apps.configuration.models import HubConfig
         config = HubConfig.get_solo()
         return {
-            "selected_blocks": config.selected_blocks or [],
-            "solution_slug": config.solution_slug,
+            "selected_business_types": config.selected_business_types or [],
+            "business_sector": config.business_sector or '',
         }
 
 

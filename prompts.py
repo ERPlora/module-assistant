@@ -100,7 +100,7 @@ When a user describes their business or asks which modules they need:
 4. Mention dependencies (if module A requires module B)
 5. Explain pricing: free modules can be installed directly, paid modules need to be purchased from the marketplace
 
-You can also use `list_available_blocks` to see functional blocks (pre-configured bundles of modules for common business types like retail, hospitality, services, etc.)."""
+You can also use `list_business_types` to see available business types from the Blueprint system (restaurant, hair_salon, clothing, etc.) grouped by sector."""
 
 
 def _user_context(user_name, user_role):
@@ -422,39 +422,80 @@ def _conversation_history(user_id):
 
 
 def _setup_context(hub_config, store_config):
+    """Build setup context for AI-driven initial configuration."""
+    # Determine what's already configured
+    has_region = bool(hub_config.language and hub_config.country_code)
+    has_business_type = bool(hub_config.selected_business_types)
+    has_business_info = bool(store_config.business_name)
+    has_tax = bool(store_config.is_configured)
+
     steps = []
-    if hub_config.language and hub_config.country_code:
-        steps.append("Step 1 (Regional): COMPLETE")
+    if has_region:
+        steps.append(f"1. Regional: DONE ({hub_config.country_code}, {hub_config.language}, {hub_config.currency})")
     else:
-        steps.append("Step 1 (Regional): PENDING - set language, country, timezone, currency")
+        steps.append("1. Regional: PENDING")
 
-    if hub_config.selected_blocks:
-        blocks = ', '.join(hub_config.selected_blocks)
-        steps.append(f"Step 2 (Modules): COMPLETE - selected: {blocks}")
+    if has_business_type:
+        types = ', '.join(hub_config.selected_business_types)
+        steps.append(f"2. Business type: DONE ({types})")
     else:
-        steps.append("Step 2 (Modules): PENDING - select functional blocks for business type")
+        steps.append("2. Business type: PENDING")
 
-    if store_config.business_name and store_config.vat_number:
-        steps.append(f"Step 3 (Business): COMPLETE - {store_config.business_name}")
+    if has_business_info:
+        steps.append(f"3. Business info: DONE ({store_config.business_name})")
     else:
-        steps.append("Step 3 (Business): PENDING - set business name, address, VAT")
+        steps.append("3. Business info: PENDING")
 
-    if store_config.is_configured:
-        steps.append("Step 4 (Tax): COMPLETE")
+    if has_tax:
+        steps.append("4. Tax: DONE")
     else:
-        steps.append("Step 4 (Tax): PENDING - configure tax rate")
+        steps.append("4. Tax: PENDING")
 
     steps_text = '\n'.join(f"- {s}" for s in steps)
 
-    return f"""## Setup Wizard Status
-You are helping the user set up their hub for the first time.
-Guide them through the configuration process.
+    return f"""## SETUP MODE — Initial Hub Configuration
+You are helping the user set up their hub for the FIRST TIME through a conversational flow.
+This replaces the traditional setup wizard. Be friendly, conversational, and guide them step by step.
 
+### Current Status
 {steps_text}
 
-Ask the user about their business type and location.
-Based on their answer, recommend appropriate functional blocks and configure settings.
-Example: "Tell me about your business - what industry, where are you located, and what's your main activity?\""""
+### Setup Flow (follow this order)
+
+**Step 1: Ask about their country and language.**
+Based on the answer, use ExecutePlan with `set_regional_config` to set:
+- country_code (ISO 2-letter: ES, FR, DE, US, GB, MX, etc.)
+- language (es, en, fr, de, it, pt)
+- timezone (Europe/Madrid, America/New_York, etc.)
+- currency (EUR, USD, GBP, MXN, etc.)
+
+**Step 2: Ask what kind of business they have.**
+Use `list_business_types` to show available business types (optionally filtered by sector).
+Then use ExecutePlan with `install_blueprint` action:
+- params: {{"type_codes": ["restaurant"], "sector": "hospitality"}}
+This installs the essential modules, creates roles, and imports seed data (products, categories).
+IMPORTANT: After install_blueprint, the hub will have new modules available. Tell the user what was installed.
+
+**Step 3: Ask for business details.**
+Use ExecutePlan with `set_business_info`:
+- business_name, business_address, vat_number, phone, email
+
+**Step 4: Configure taxes.**
+Use ExecutePlan with `set_tax_config`:
+- tax_rate (e.g., 21 for Spain), tax_included (true/false)
+Also create tax classes with `create_tax_class` if needed (e.g., general 21%, reduced 10%, super-reduced 4% for Spain).
+
+**Step 5: Complete setup.**
+Use ExecutePlan with `complete_setup` to mark the hub as configured.
+Then congratulate the user and suggest next steps (add products, create employees, start selling).
+
+### Guidelines
+- Ask ONE question at a time, don't overwhelm the user
+- Use country defaults when possible (Spain → EUR, Europe/Madrid, es)
+- If the user says "restaurant in Madrid", you can infer: ES, es, Europe/Madrid, EUR, restaurant, hospitality
+- After blueprint install, briefly list what modules were installed
+- The user can always go to /setup/ for the manual wizard instead
+- Keep it conversational and efficient — most setups should take 3-5 messages"""
 
 
 def _safety_rules():
