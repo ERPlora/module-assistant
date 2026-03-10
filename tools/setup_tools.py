@@ -11,7 +11,7 @@ class SetRegionalConfig(AssistantTool):
     name = "set_regional_config"
     description = "Set regional configuration: language, timezone, country code, currency"
     requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
+    required_permission = None
     setup_only = True
     parameters = {
         "type": "object",
@@ -59,7 +59,7 @@ class SetBusinessInfo(AssistantTool):
     name = "set_business_info"
     description = "Set business information: name, address, VAT/tax ID number"
     requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
+    required_permission = None
     setup_only = True
     parameters = {
         "type": "object",
@@ -91,7 +91,7 @@ class SetTaxConfig(AssistantTool):
     name = "set_tax_config"
     description = "Set tax configuration: default tax rate and whether prices include tax"
     requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
+    required_permission = None
     setup_only = True
     parameters = {
         "type": "object",
@@ -123,7 +123,7 @@ class CompleteSetupStep(AssistantTool):
     name = "complete_setup_step"
     description = "Mark the hub setup as complete. Call this after all configuration steps are done."
     requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
+    required_permission = None
     setup_only = True
     parameters = {
         "type": "object",
