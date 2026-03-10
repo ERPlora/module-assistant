@@ -594,6 +594,7 @@ def chat(request):
     message = request.POST.get('message', '').strip()
     conversation_id = request.POST.get('conversation_id', '')
     context = request.POST.get('context', 'general')
+    setup_module = request.POST.get('setup_module', '')
     uploaded_file = request.FILES.get('file')
 
     if not message and not uploaded_file:
@@ -603,6 +604,10 @@ def chat(request):
                 'content': 'Please type a message.',
             }, request=request),
         )
+
+    # Store setup_module in session for the prompt builder
+    if setup_module:
+        request.session['_assistant_setup_module'] = setup_module
 
     user_id = request.session.get('local_user_id')
 

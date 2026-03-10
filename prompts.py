@@ -66,6 +66,11 @@ def build_system_prompt(request, context='general'):
     if context == 'setup':
         parts.append(_setup_context(hub_config, store_config))
 
+    # Module-specific setup context
+    setup_module = request.session.get('_assistant_setup_module', '')
+    if setup_module:
+        parts.append(_module_setup_context(setup_module))
+
     parts.append(_safety_rules())
 
     # Filter out empty parts
@@ -455,6 +460,59 @@ Guide them through the configuration process.
 Ask the user about their business type and location.
 Based on their answer, recommend appropriate functional blocks and configure settings.
 Example: "Tell me about your business - what industry, where are you located, and what's your main activity?\""""
+
+
+def _module_setup_context(module_id):
+    """Context for module-specific initial setup via AI."""
+    import importlib
+
+    try:
+        mod = importlib.import_module(f'{module_id}.module')
+        setup = getattr(mod, 'SETUP', None)
+    except Exception:
+        setup = None
+
+    if not setup:
+        return ''
+
+    title = str(setup.get('title', module_id))
+    description = str(setup.get('description', ''))
+
+    # Module-specific setup instructions
+    module_instructions = {
+        'tables': (
+            "You are configuring the Tables module. Your job is to:\n"
+            "1. First call `load_module_tools(modules=['tables'])` to load the tools\n"
+            "2. Ask the user about their floor layout: how many zones (terrace, interior, bar, VIP, etc.), "
+            "how many tables per zone, and seating capacity per table\n"
+            "3. Once you have the info, use `create_zone` for each zone, then `bulk_create_tables` for each zone's tables\n"
+            "4. Show a summary of what was created\n"
+            "Keep it conversational and quick. The user can always adjust later via the module's UI."
+        ),
+        'reservations': (
+            "You are configuring the Reservations module. Your job is to:\n"
+            "1. First call `load_module_tools(modules=['reservations'])` to load the tools\n"
+            "2. Ask the user about their schedule: lunch hours, dinner hours, days off, "
+            "max simultaneous reservations per slot\n"
+            "3. Once you have the info, use `create_time_slot` for each day+shift combination\n"
+            "4. Show a summary of the created schedule\n"
+            "Keep it conversational and quick. The user can always adjust later via the module's UI."
+        ),
+    }
+
+    specific = module_instructions.get(module_id, (
+        f"You are configuring the {title} module ({description}). "
+        f"First call `load_module_tools(modules=['{module_id}'])` to load the tools, "
+        "then guide the user through the initial setup."
+    ))
+
+    return f"""## Module Setup: {title}
+{description}
+
+{specific}
+
+IMPORTANT: This is a focused setup conversation. Stay on topic — help the user configure this specific module.
+After setup is complete, tell the user they can go to the module to start using it."""
 
 
 def _safety_rules():
