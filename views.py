@@ -707,7 +707,17 @@ def poll_progress(request, request_id):
     """
     progress = cache.get(f'assistant_progress_{request_id}')
     if not progress:
-        progress = {'type': 'thinking', 'data': 'Processing...'}
+        # No progress in cache — check if result exists (completed while we weren't polling)
+        result = cache.get(f'assistant_result_{request_id}')
+        if result:
+            progress = {'type': 'complete', 'data': ''}
+        else:
+            # Neither progress nor result — request expired or was lost. Stop polling.
+            return HttpResponse(render_to_string('assistant/partials/message.html', {
+                'role': 'system',
+                'content': 'Request timed out. Please try again.',
+                'error': True,
+            }, request=request))
 
     if progress['type'] in ('complete', 'error'):
         # Get the final result
