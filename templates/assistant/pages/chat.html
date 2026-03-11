@@ -12,6 +12,12 @@
     if (window._chatListenersAttached) return;
     window._chatListenersAttached = true;
 
+    var CHAT_STORAGE_KEY = 'assistant_chat_';
+
+    // -------------------------------------------------------------------------
+    // Utility helpers
+    // -------------------------------------------------------------------------
+
     function clearFileAttachment() {
         var fi = document.getElementById('chat-file');
         if (fi) fi.value = '';
@@ -22,8 +28,6 @@
         var icon = document.getElementById('file-preview-icon');
         if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
     }
-
-    var CHAT_STORAGE_KEY = 'assistant_chat_';
 
     function saveChatToStorage() {
         var convId = document.getElementById('conv-id');
@@ -68,7 +72,7 @@
     function appendUserBubble(msg) {
         var msgs = document.getElementById('chat-messages');
         if (!msgs) return;
-        var html = msg.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        var html = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         var div = document.createElement('div');
         div.className = 'chat-message chat-user';
         div.innerHTML = '<div class="chat-bubble">' + html + '</div>';
@@ -76,24 +80,15 @@
         scrollToBottom();
     }
 
-    window.chatBeforeRequest = function(form) {
-        var inp = document.getElementById('chat-input');
-        var msg = inp ? inp.value.trim() : '';
-        if (msg) appendUserBubble(msg);
-        setLoading(true);
-        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
-    };
-
-    function updateTierInfo(xhr) {
-        var usage = xhr && xhr.getResponseHeader('X-Assistant-Usage');
-        if (!usage) return;
+    function updateTierInfo(usageJson) {
+        if (!usageJson) return;
         try {
-            var data = JSON.parse(usage);
+            var data = typeof usageJson === 'string' ? JSON.parse(usageJson) : usageJson;
             var badge = document.getElementById('tier-badge');
             var usageEl = document.getElementById('tier-usage');
-            if (badge && data.tier) {
-                badge.textContent = data.tier;
-                badge.className = 'badge badge-sm' + (data.tier === 'free' ? ' badge-outline' : ' color-primary');
+            if (badge && data.tier_name) {
+                badge.textContent = data.tier_name;
+                badge.className = 'badge badge-sm' + (data.tier_name === 'free' ? ' badge-outline' : ' color-primary');
             }
             if (usageEl && data.messages_limit > 0) {
                 var used = data.messages_used || 0;
@@ -109,6 +104,15 @@
         } catch(e) {}
     }
 
+    // Legacy HTMX helpers (used by fallback polling path)
+    window.chatBeforeRequest = function(form) {
+        var inp = document.getElementById('chat-input');
+        var msg = inp ? inp.value.trim() : '';
+        if (msg) appendUserBubble(msg);
+        setLoading(true);
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+    };
+
     window.chatAfterRequest = function(form, event) {
         setLoading(false);
         clearFileAttachment();
@@ -119,7 +123,8 @@
                 var convInput = document.getElementById('conv-id');
                 if (convInput) convInput.value = convId;
             }
-            updateTierInfo(xhr);
+            var usage = xhr.getResponseHeader('X-Assistant-Usage');
+            updateTierInfo(usage);
         }
         scrollToBottom();
         saveChatToStorage();
@@ -127,11 +132,479 @@
         if (inp) inp.focus();
     };
 
+    // -------------------------------------------------------------------------
+    // SSE streaming
+    // -------------------------------------------------------------------------
+
+    /**
+     * Create a typing-indicator bubble and return it.
+     * The bubble starts with an animated dots indicator.
+     */
+    function appendTypingBubble() {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return null;
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-assistant';
+        div.id = 'chat-streaming-bubble';
+        div.innerHTML = '<div class="chat-bubble prose" id="chat-streaming-content">' +
+            '<div class="chat-typing">' +
+            '<span class="chat-typing-dot"></span>' +
+            '<span class="chat-typing-dot"></span>' +
+            '<span class="chat-typing-dot"></span>' +
+            '</div>' +
+            '</div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+        return div;
+    }
+
+    /**
+     * Add a tool call indicator inside the streaming bubble (or create a new bubble).
+     */
+    function appendToolIndicator(toolName) {
+        var bubble = document.getElementById('chat-streaming-bubble');
+        if (!bubble) {
+            var msgs = document.getElementById('chat-messages');
+            if (!msgs) return;
+            bubble = document.createElement('div');
+            bubble.className = 'chat-message chat-assistant';
+            bubble.id = 'chat-streaming-bubble';
+            bubble.innerHTML = '<div class="chat-bubble prose" id="chat-streaming-content"></div>';
+            msgs.appendChild(bubble);
+        }
+        var content = document.getElementById('chat-streaming-content');
+        if (!content) return;
+        // Remove typing dots if still showing
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        var indicator = document.createElement('div');
+        indicator.className = 'chat-tool-indicator';
+        indicator.innerHTML = '<span class="loading loading-sm"></span><span>' +
+            _formatToolName(toolName) + '</span>';
+        indicator.dataset.toolName = toolName;
+        content.appendChild(indicator);
+        scrollToBottom();
+    }
+
+    function _formatToolName(name) {
+        return name.replace(/_/g, ' ');
+    }
+
+    /**
+     * Append a text delta to the streaming bubble, showing a blinking cursor.
+     * Removes the typing dots on first text chunk.
+     */
+    var _streamRawText = '';
+    function appendTextDelta(text) {
+        var content = document.getElementById('chat-streaming-content');
+        if (!content) return;
+        // Remove typing dots on first text chunk
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        _streamRawText += text;
+
+        // Update the text node (escape HTML)
+        var textNode = content.querySelector('.stream-text');
+        if (!textNode) {
+            textNode = document.createElement('span');
+            textNode.className = 'stream-text';
+            // Insert before any tool indicators, or at start
+            var firstTool = content.querySelector('.chat-tool-indicator');
+            if (firstTool) {
+                content.insertBefore(textNode, firstTool);
+            } else {
+                content.appendChild(textNode);
+            }
+        }
+        // Use innerText for safe text rendering during streaming
+        textNode.innerText = _streamRawText;
+        scrollToBottom();
+    }
+
+    /**
+     * Show an error in a system bubble.
+     */
+    function appendErrorBubble(message) {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-system';
+        div.innerHTML = '<div class="callout callout-error"><div class="callout-content">' +
+            '<div class="callout-text">' +
+            message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+            '</div></div></div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+    }
+
+    /**
+     * Finalize the streaming bubble: replace plain text with markdown-rendered HTML.
+     * Falls back to a plain text paragraph if marked is not available.
+     */
+    function finalizeStreamBubble(markdownText) {
+        var bubble = document.getElementById('chat-streaming-bubble');
+        if (!bubble) return;
+
+        // Remove streaming-specific id attributes
+        bubble.removeAttribute('id');
+        var content = bubble.querySelector('#chat-streaming-content');
+        if (content) content.removeAttribute('id');
+
+        if (!content) return;
+
+        // Remove streaming helper elements (typing dots, cursor, plain text span)
+        var textNode = content.querySelector('.stream-text');
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        // Render markdown — use the same approach as poll_progress (server renders markdown,
+        // but here we do it client-side with a simple approach since we have the raw text).
+        // We call the /chat/send/ endpoint to render the final HTML (most accurate),
+        // but we already have the text so we render it inline using basic rules.
+        if (markdownText) {
+            // Simple inline rendering for common markdown patterns.
+            // Server-rendered HTML is used when the response event triggers
+            // a fallback if tool calls are present; otherwise we display this.
+            var rendered = _renderMarkdown(markdownText);
+            if (textNode) {
+                textNode.outerHTML = rendered;
+            } else {
+                // Prepend rendered text before tool indicators
+                var firstTool = content.querySelector('.chat-tool-indicator');
+                var tempDiv = document.createElement('div');
+                tempDiv.innerHTML = rendered;
+                while (tempDiv.firstChild) {
+                    if (firstTool) content.insertBefore(tempDiv.firstChild, firstTool);
+                    else content.appendChild(tempDiv.firstChild);
+                }
+            }
+        } else if (textNode) {
+            // No markdown text but we have a text node — keep as-is
+        }
+
+        // Remove tool indicator spinners (replace with a checkmark)
+        var indicators = content.querySelectorAll('.chat-tool-indicator');
+        indicators.forEach(function(ind) { ind.remove(); });
+    }
+
+    /**
+     * Very lightweight client-side markdown renderer for the streaming bubble.
+     * Handles the most common patterns. The server renders proper markdown for
+     * the history/storage copy via the fallback path.
+     */
+    function _renderMarkdown(text) {
+        var html = text
+            // Escape HTML first
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            // Code blocks (``` ... ```)
+            .replace(/```[\w]*\n?([\s\S]*?)```/g, function(_, code) {
+                return '<pre><code>' + code.trim() + '</code></pre>';
+            })
+            // Inline code
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            // Bold **text** or __text__
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+            // Italic *text* or _text_
+            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+            .replace(/_([^_]+)_/g, '<em>$1</em>')
+            // Unordered lists (- item or * item)
+            .replace(/^[\*\-] (.+)$/gm, '<li>$1</li>')
+            // Ordered lists
+            .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+            // Headers
+            .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+            .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+            .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+            // Paragraphs / newlines
+            .replace(/\n\n/g, '</p><p>')
+            .replace(/\n/g, '<br>');
+
+        // Wrap loose <li> in <ul>
+        html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+        // Wrap in paragraph if not already block element
+        if (!/^<[hup]/.test(html.trim())) {
+            html = '<p>' + html + '</p>';
+        }
+        return html;
+    }
+
+    /**
+     * Main SSE-based form submit handler.
+     * Falls back to HTMX polling if SSE is unsupported or the file attachment is present.
+     */
+    function submitWithStreaming(form) {
+        var inp = document.getElementById('chat-input');
+        var message = inp ? inp.value.trim() : '';
+        var hasFile = document.getElementById('chat-file') &&
+                      document.getElementById('chat-file').files.length > 0;
+
+        if (!message && !hasFile) return;
+
+        // File uploads can't stream — fall back to polling
+        if (hasFile) {
+            _submitWithFallback(form, message);
+            return;
+        }
+
+        var streamUrl = form.dataset.streamUrl;
+        if (!streamUrl || typeof fetch === 'undefined') {
+            _submitWithFallback(form, message);
+            return;
+        }
+
+        // Show user bubble + clear input
+        appendUserBubble(message);
+        setLoading(true);
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+        _streamRawText = '';
+
+        // Build form data
+        var convInput = document.getElementById('conv-id');
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', convInput ? convInput.value : '');
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+
+        // Create the streaming bubble with typing indicator
+        appendTypingBubble();
+
+        var hasFunctionCalls = false;
+        var fullResponseOutput = null;
+        var streamFailed = false;
+
+        fetch(streamUrl, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-CSRFToken': csrfInput ? csrfInput.value : '',
+                'Accept': 'text/event-stream',
+            },
+        }).then(function(response) {
+            if (!response.ok || !response.body) {
+                throw new Error('Stream not available (status ' + response.status + ')');
+            }
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function processLine(line) {
+                if (!line.startsWith('data: ')) return;
+                var raw = line.slice(6).trim();
+                if (raw === '[DONE]') return;
+                try {
+                    var evt = JSON.parse(raw);
+                    if (evt.type === 'conv_id') {
+                        // Update conversation ID in the form
+                        if (convInput) convInput.value = evt.conversation_id;
+                    } else if (evt.type === 'text_delta') {
+                        appendTextDelta(evt.text || '');
+                    } else if (evt.type === 'function_call') {
+                        hasFunctionCalls = true;
+                        appendToolIndicator(evt.name || '');
+                    } else if (evt.type === 'response') {
+                        fullResponseOutput = evt.output || [];
+                        var usage = evt.usage;
+                        if (usage) updateTierInfo(usage);
+                    } else if (evt.type === 'error') {
+                        streamFailed = true;
+                        // Remove streaming bubble
+                        var bubble = document.getElementById('chat-streaming-bubble');
+                        if (bubble) bubble.remove();
+                        appendErrorBubble(evt.message || 'An error occurred.');
+                    }
+                } catch(e) {}
+            }
+
+            function pump() {
+                return reader.read().then(function(result) {
+                    if (result.done) return;
+                    buffer += decoder.decode(result.value, { stream: true });
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep incomplete last line
+                    lines.forEach(processLine);
+                    return pump();
+                });
+            }
+
+            return pump();
+
+        }).then(function() {
+            // Process any remaining buffered data
+            if (buffer) {
+                buffer.split('\n').forEach(processLine);
+                buffer = '';
+            }
+
+            if (streamFailed) {
+                setLoading(false);
+                saveChatToStorage();
+                var inp2 = document.getElementById('chat-input');
+                if (inp2) inp2.focus();
+                return;
+            }
+
+            if (hasFunctionCalls) {
+                // Tool calls detected — the streaming output is incomplete.
+                // Remove the streaming bubble and fall back to the full
+                // agentic loop (polling) so tools get executed properly.
+                var bubble = document.getElementById('chat-streaming-bubble');
+                if (bubble) bubble.remove();
+                _streamRawText = '';
+                _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
+            } else {
+                // Pure text response — finalize the streaming bubble.
+                finalizeStreamBubble(_streamRawText);
+                setLoading(false);
+                clearFileAttachment();
+                saveChatToStorage();
+                var inp2 = document.getElementById('chat-input');
+                if (inp2) inp2.focus();
+            }
+
+        }).catch(function(err) {
+            // SSE not supported or network error — fall back to polling
+            var bubble = document.getElementById('chat-streaming-bubble');
+            if (bubble) bubble.remove();
+            _streamRawText = '';
+            _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
+        });
+    }
+
+    /**
+     * Fall back to polling endpoint (original flow) for file uploads or when
+     * SSE is unavailable. Uses fetch to POST the multipart form data so file
+     * attachments are included.
+     */
+    function _submitWithFallback(form, message) {
+        var fallbackUrl = form.dataset.fallbackUrl;
+        if (!fallbackUrl) return;
+
+        appendUserBubble(message);
+        setLoading(true);
+
+        var inp = document.getElementById('chat-input');
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+
+        var convInput = document.getElementById('conv-id');
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+        var fileInput = document.getElementById('chat-file');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', convInput ? convInput.value : '');
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+        if (fileInput && fileInput.files.length > 0) formData.append('file', fileInput.files[0]);
+
+        fetch(fallbackUrl, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
+        }).then(function(resp) {
+            var convId = resp.headers.get('X-Conversation-Id');
+            if (convId && convInput) convInput.value = convId;
+            var usage = resp.headers.get('X-Assistant-Usage');
+            updateTierInfo(usage);
+            return resp.text();
+        }).then(function(html) {
+            var msgs = document.getElementById('chat-messages');
+            if (msgs && html) {
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                while (tmp.firstChild) msgs.appendChild(tmp.firstChild);
+                if (window.htmx) htmx.process(msgs);
+            }
+            setLoading(false);
+            clearFileAttachment();
+            scrollToBottom();
+            saveChatToStorage();
+            var inp2 = document.getElementById('chat-input');
+            if (inp2) inp2.focus();
+        }).catch(function() {
+            appendErrorBubble('{% trans "Something went wrong. Please try again." %}');
+            setLoading(false);
+        });
+    }
+
+    /**
+     * Submit to the fallback (polling) endpoint with a specific message text,
+     * used when SSE detected tool calls and we need the full agentic loop.
+     */
+    function _submitFallbackWithMessage(form, message, conversationId) {
+        setLoading(true);
+        _streamRawText = '';
+
+        var fallbackUrl = form.dataset.fallbackUrl;
+        if (!fallbackUrl) { setLoading(false); return; }
+
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+        var convInput = document.getElementById('conv-id');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', conversationId || (convInput ? convInput.value : ''));
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+
+        fetch(fallbackUrl, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
+        }).then(function(resp) {
+            var convId = resp.headers.get('X-Conversation-Id');
+            if (convId && convInput) convInput.value = convId;
+            var usage = resp.headers.get('X-Assistant-Usage');
+            updateTierInfo(usage);
+            return resp.text();
+        }).then(function(html) {
+            var msgs = document.getElementById('chat-messages');
+            if (msgs && html) {
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                while (tmp.firstChild) msgs.appendChild(tmp.firstChild);
+                // Re-process HTMX on injected HTML (for poll partial's hx-get)
+                if (window.htmx) htmx.process(msgs);
+            }
+            setLoading(false);
+            clearFileAttachment();
+            scrollToBottom();
+            saveChatToStorage();
+            var inp = document.getElementById('chat-input');
+            if (inp) inp.focus();
+        }).catch(function() {
+            appendErrorBubble('{% trans "Something went wrong. Please try again." %}');
+            setLoading(false);
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Form submit interception
+    // -------------------------------------------------------------------------
+
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (form.id !== 'chat-form') return;
+        e.preventDefault();
+        submitWithStreaming(form);
+    });
+
     document.addEventListener('keydown', function(e) {
         if (e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             var form = document.getElementById('chat-form');
-            if (form && window.htmx) htmx.trigger(form, 'submit');
+            if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         }
     });
 
@@ -156,6 +629,7 @@
                 '</p></div></div>';
             clearFileAttachment();
             setLoading(false);
+            _streamRawText = '';
             var inp = document.getElementById('chat-input');
             if (inp) { inp.value = ''; inp.focus(); }
             return;

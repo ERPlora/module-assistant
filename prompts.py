@@ -70,6 +70,7 @@ def build_system_prompt(request, context='general'):
         _roles_context(request),
         _tax_context(),
         _payment_context(),
+        _memories_context(hub_config),
         _recent_activity(user_id),
         _conversation_history(user_id),
     ]
@@ -432,6 +433,33 @@ def _payment_context():
 
         return f"## Payment Methods\n{', '.join(parts)}"
     except Exception:
+        return ''
+
+
+def _memories_context(hub_config):
+    """Inject persistent memories saved by the AI across previous sessions."""
+    try:
+        from assistant.models import AssistantMemory
+
+        hub_id = hub_config.hub_id
+        if not hub_id:
+            return ''
+
+        memories = AssistantMemory.objects.filter(
+            hub_id=hub_id,
+            is_deleted=False,
+        ).order_by('key')
+
+        if not memories.exists():
+            return ''
+
+        lines = ['## Your Memories (from previous sessions)']
+        for m in memories:
+            lines.append(f"- {m.key}: {m.content}")
+
+        return '\n'.join(lines)
+    except Exception as e:
+        logger.debug(f"[ASSISTANT] Error loading memories: {e}")
         return ''
 
 

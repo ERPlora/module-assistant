@@ -5,6 +5,13 @@ Executes a plan (or subset) atomically with a single user confirmation.
 Supports: regional config, business info, tax, modules, roles, employees,
 categories, products, services, payment methods, business hours, zones,
 tables, and blueprint installation.
+
+Step-by-step progress is published to Django cache so the frontend can poll
+for live updates during long-running plans.
+
+Rollback: when stop_on_failure=True and a step fails, previously completed
+steps are rolled back in reverse order using optional rollback hints stored
+per step.
 """
 import logging
 import os
@@ -12,6 +19,27 @@ import os
 from assistant.tools import AssistantTool, register_tool
 
 logger = logging.getLogger(__name__)
+
+PLAN_PROGRESS_TIMEOUT = 300  # seconds
+
+
+def _set_plan_progress(request_id, step_index, total, action, status, message=''):
+    """
+    Publish per-step progress to cache so the frontend polling loop can show it.
+
+    status: 'running' | 'done' | 'failed' | 'rolling_back' | 'rolled_back'
+    """
+    if not request_id:
+        return
+    from django.core.cache import cache
+    cache.set(
+        f'assistant_progress_{request_id}',
+        {
+            'type': 'tool',
+            'data': message or f'Step {step_index}/{total}: {action}... ({status})',
+        },
+        timeout=PLAN_PROGRESS_TIMEOUT,
+    )
 
 
 @register_tool
@@ -30,8 +58,10 @@ class ExecutePlan(AssistantTool):
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
-        "All steps are executed in order. If any step fails, the error is reported "
-        "but remaining steps continue. "
+        "Steps are executed in order with real-time progress updates. "
+        "If stop_on_failure=true (default) and a step fails, remaining steps are skipped and "
+        "previously completed steps are rolled back in reverse order where rollback info is provided. "
+        "Each step may include rollback_action and rollback_params to enable rollback on failure. "
         "Use this after presenting a plan to the user, or for partial execution "
         "(e.g., just installing modules or just creating roles). "
         "CRITICAL: When the user confirms a plan you presented, the steps in execute_plan "
@@ -39,13 +69,13 @@ class ExecutePlan(AssistantTool):
         "Never substitute generic or simplified data for the specific details you showed the user."
     )
     short_description = (
-        "Execute a multi-step business configuration plan atomically. "
+        "Execute a multi-step business configuration plan atomically with real-time progress. "
         "Actions: set_regional_config, set_business_info, set_tax_config, create_role, create_employee, "
         "create_tax_class, update_store_config, complete_setup, create_category, create_product, "
         "create_service_category, create_service, create_payment_method, set_business_hours, "
         "create_zone, create_table, bulk_create_zones, bulk_create_tables, install_blueprint, "
         "install_blueprint_products, create_station. "
-        "Steps run in order; failures reported but execution continues. "
+        "stop_on_failure=true (default): stops on first error and rolls back completed steps. "
         "ALWAYS use exact names/prices/quantities you showed the user — never substitute."
     )
     requires_confirmation = True
@@ -78,12 +108,35 @@ class ExecutePlan(AssistantTool):
                             "type": "object",
                             "description": "Parameters for the action",
                         },
+                        "description": {
+                            "type": ["string", "null"],
+                            "description": "Optional human-readable description of what this step does (null if not needed)",
+                        },
+                        "rollback_action": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "Optional action to call to undo this step if a later step fails. "
+                                "E.g., 'delete_category' if action was 'create_category'. Null if no rollback needed."
+                            ),
+                        },
+                        "rollback_params": {
+                            "type": ["object", "null"],
+                            "description": "Parameters for the rollback_action. May reference result fields via {result.field}. Null if no rollback.",
+                        },
                     },
-                    "required": ["action", "params"],
+                    "required": ["action", "params", "description", "rollback_action", "rollback_params"],
                 },
             },
+            "stop_on_failure": {
+                "type": "boolean",
+                "description": (
+                    "If true (default), stop executing remaining steps when any step fails "
+                    "and roll back previously completed steps in reverse order. "
+                    "If false, continue executing remaining steps even after a failure."
+                ),
+            },
         },
-        "required": ["steps"],
+        "required": ["steps", "stop_on_failure"],
         "additionalProperties": False,
     }
 
@@ -92,42 +145,171 @@ class ExecutePlan(AssistantTool):
         if not steps:
             return {"success": False, "error": "No steps provided"}
 
+        # stop_on_failure defaults to True — stop & rollback on first error
+        stop_on_failure = args.get('stop_on_failure', True)
+
+        # Internal: request_id injected by execute_confirmed_action for live progress
+        request_id = args.get('_plan_request_id', None)
+
+        total = len(steps)
+        completed = []   # list of (step_dict, step_result) for rollback
         results = []
         errors = []
+        failed_step = None
+        rolled_back = []
 
         for i, step in enumerate(steps):
             action = step.get('action', '')
             params = step.get('params', {})
+            description = step.get('description', '') or action.replace('_', ' ')
+
+            _set_plan_progress(
+                request_id, i + 1, total, action, 'running',
+                f'Step {i + 1}/{total}: {description}...',
+            )
 
             try:
                 result = self._execute_step(action, params, request)
+                completed.append((step, result))
                 results.append({
                     'step': i + 1,
                     'action': action,
+                    'description': description,
                     'success': True,
                     'result': result,
                 })
+                _set_plan_progress(
+                    request_id, i + 1, total, action, 'done',
+                    f'Step {i + 1}/{total}: {description} — done',
+                )
             except Exception as e:
                 logger.error(f"[ASSISTANT] Plan step {i+1} ({action}) failed: {e}", exc_info=True)
                 error_msg = self._friendly_error(e)
+                failed_step = {
+                    'step': i + 1,
+                    'action': action,
+                    'description': description,
+                    'error': error_msg,
+                }
                 results.append({
                     'step': i + 1,
                     'action': action,
+                    'description': description,
                     'success': False,
                     'error': error_msg,
                 })
                 errors.append(f"Step {i+1} ({action}): {error_msg}")
 
+                _set_plan_progress(
+                    request_id, i + 1, total, action, 'failed',
+                    f'Step {i + 1}/{total}: {description} — FAILED: {error_msg}',
+                )
+
+                if stop_on_failure:
+                    # Attempt rollback of completed steps in reverse order
+                    for rb_step, rb_result in reversed(completed):
+                        rb_action = rb_step.get('rollback_action', '')
+                        rb_params = rb_step.get('rollback_params', {})
+                        rb_desc = rb_step.get('description', '') or rb_step.get('action', '').replace('_', ' ')
+
+                        if not rb_action:
+                            rolled_back.append({
+                                'action': rb_step.get('action', ''),
+                                'description': rb_desc,
+                                'rolled_back': False,
+                                'reason': 'No rollback_action defined',
+                            })
+                            continue
+
+                        # Interpolate result fields into rollback_params
+                        resolved_params = self._resolve_rollback_params(rb_params, rb_result)
+
+                        _set_plan_progress(
+                            request_id, i + 1, total, rb_action, 'rolling_back',
+                            f'Rolling back: {rb_desc}...',
+                        )
+                        try:
+                            self._execute_step(rb_action, resolved_params, request)
+                            rolled_back.append({
+                                'action': rb_step.get('action', ''),
+                                'description': rb_desc,
+                                'rolled_back': True,
+                            })
+                            _set_plan_progress(
+                                request_id, i + 1, total, rb_action, 'rolled_back',
+                                f'Rolled back: {rb_desc}',
+                            )
+                        except Exception as rb_exc:
+                            rb_error = self._friendly_error(rb_exc)
+                            logger.warning(
+                                f"[ASSISTANT] Rollback of {rb_step.get('action', '')} failed: {rb_error}"
+                            )
+                            rolled_back.append({
+                                'action': rb_step.get('action', ''),
+                                'description': rb_desc,
+                                'rolled_back': False,
+                                'error': rb_error,
+                            })
+                    break  # Stop processing remaining steps
+
         success_count = sum(1 for r in results if r['success'])
 
         return {
             "success": len(errors) == 0,
-            "total_steps": len(steps),
+            "total_steps": total,
             "succeeded": success_count,
             "failed": len(errors),
+            "failed_step": failed_step,
             "results": results,
+            "rolled_back": rolled_back,
             "errors": errors,
+            "summary": self._build_summary(results, rolled_back, errors),
         }
+
+    def _resolve_rollback_params(self, rb_params, step_result):
+        """
+        Resolve rollback_params by substituting {result.field} placeholders
+        with values from the step's result dict.
+
+        Example: rollback_params={"id": "{result.id}"} + step_result={"id": "42"}
+        → {"id": "42"}
+        """
+        if not rb_params or not isinstance(step_result, dict):
+            return rb_params or {}
+
+        import re
+
+        def _substitute(value):
+            if not isinstance(value, str):
+                return value
+            match = re.fullmatch(r'\{result\.(\w+)\}', value.strip())
+            if match:
+                field = match.group(1)
+                return step_result.get(field, value)
+            return value
+
+        resolved = {}
+        for k, v in rb_params.items():
+            resolved[k] = _substitute(v)
+        return resolved
+
+    def _build_summary(self, results, rolled_back, errors):
+        """Build a concise human-readable summary of plan execution."""
+        total = len(results)
+        succeeded = sum(1 for r in results if r['success'])
+        rb_count = sum(1 for r in rolled_back if r.get('rolled_back'))
+
+        if not errors:
+            return f"All {total} steps completed successfully."
+
+        parts = [f"{succeeded}/{total} steps succeeded."]
+        if errors:
+            parts.append(f"Failed: {errors[0]}")
+        if rb_count:
+            parts.append(f"Rolled back {rb_count} step(s).")
+        elif rolled_back:
+            parts.append(f"Rollback attempted for {len(rolled_back)} step(s) (no rollback actions defined).")
+        return ' '.join(parts)
 
     def _execute_step(self, action, params, request):
         """Execute a single plan step."""

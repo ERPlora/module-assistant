@@ -12,7 +12,7 @@ import threading
 import uuid as uuid_mod
 
 from django.core.cache import cache
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.template.loader import render_to_string
 from django.views.decorators.http import require_POST
 
@@ -443,11 +443,17 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         confirmed=False,
                         llm_message_id=pending_llm_message_id,
                     )
+                    # Try to get rich confirmation data from the tool
+                    try:
+                        confirmation_data = tool.get_confirmation_data(tool_args, request)
+                    except Exception:
+                        confirmation_data = None
                     pending_actions.append({
                         'log_id': str(action_log.id),
                         'tool_name': tool_name,
                         'tool_args': tool_args,
                         'description': format_confirmation_text(tool_name, tool_args),
+                        'confirmation_data': confirmation_data,
                     })
                     tool_results.append({
                         'type': 'function_call_output',
@@ -582,9 +588,15 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     }
 
 
-def execute_confirmed_action(action_log, request):
+def execute_confirmed_action(action_log, request, plan_request_id=None):
     """
     Execute a confirmed action. Shared between HTMX and API views.
+
+    Args:
+        action_log: AssistantActionLog instance
+        request: Django request (or fake request for background threads)
+        plan_request_id: optional request_id to inject into execute_plan args
+            so the tool can publish per-step progress to the polling cache.
 
     Returns:
         dict with keys: success, message, result
@@ -602,6 +614,11 @@ def execute_confirmed_action(action_log, request):
 
     # Remove internal _call_id before passing args to the tool
     exec_args = {k: v for k, v in action_log.tool_args.items() if k != '_call_id'}
+
+    # For execute_plan: inject the request_id so the tool can emit per-step
+    # progress updates that the frontend polls via poll_progress.
+    if action_log.tool_name == 'execute_plan' and plan_request_id:
+        exec_args = {**exec_args, '_plan_request_id': plan_request_id}
 
     try:
         result = tool.safe_execute(exec_args, request)
@@ -751,6 +768,139 @@ def chat(request):
 
 @login_required
 @permission_required('assistant.use_chat')
+@require_POST
+def chat_stream(request):
+    """
+    SSE streaming endpoint for the chat assistant.
+
+    Proxies the Cloud streaming endpoint (POST /api/hubs/me/assistant/chat/stream/)
+    directly to the browser as Server-Sent Events.
+
+    The stream carries:
+      data: {"type": "text_delta", "text": "..."}
+      data: {"type": "function_call", "name": "...", "call_id": "...", "arguments": "..."}
+      data: {"type": "response", "id": "...", "output": [...], "usage": {...}}
+      data: {"type": "error", "message": "..."}
+      data: [DONE]
+
+    After the stream ends (on "response" event), the frontend checks for
+    function_calls in output. If present, it falls back to the standard
+    polling flow by posting to chat_message. Otherwise the streamed text
+    is the final answer.
+
+    Returns 200 text/event-stream on success, 400/500 JSON on setup errors.
+    """
+    import requests as http_requests
+    from apps.configuration.models import HubConfig
+    from django.conf import settings
+
+    message = request.POST.get('message', '').strip()
+    conversation_id = request.POST.get('conversation_id', '')
+    context = request.POST.get('context', 'general')
+
+    if not message:
+        def _err():
+            yield f'data: {json.dumps({"type": "error", "message": "Please type a message."})}\n\n'
+            yield 'data: [DONE]\n\n'
+        return StreamingHttpResponse(_err(), content_type='text/event-stream')
+
+    user_id = request.session.get('local_user_id')
+    conversation = _get_or_create_conversation(user_id, conversation_id, context)
+
+    from apps.accounts.models import LocalUser
+    try:
+        user = LocalUser.objects.get(id=user_id)
+    except LocalUser.DoesNotExist:
+        def _err():
+            yield f'data: {json.dumps({"type": "error", "message": "User not found."})}\n\n'
+            yield 'data: [DONE]\n\n'
+        return StreamingHttpResponse(_err(), content_type='text/event-stream')
+
+    _track_conversation_message(conversation, message)
+
+    config = HubConfig.get_solo()
+    if not config.hub_jwt:
+        def _err():
+            yield f'data: {json.dumps({"type": "error", "message": "Hub is not connected to Cloud."})}\n\n'
+            yield 'data: [DONE]\n\n'
+        return StreamingHttpResponse(_err(), content_type='text/event-stream')
+
+    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+    instructions = build_system_prompt(request, context)
+
+    # Build tools list for the payload
+    from assistant.tools import _get_active_module_ids
+    active_module_ids = set(_get_active_module_ids())
+    is_new_session = conversation.message_count == 1  # just incremented above
+    if is_new_session:
+        loaded_modules = set()
+    else:
+        session_loaded = request.session.get('assistant_loaded_modules', [])
+        loaded_modules = set(session_loaded) & active_module_ids
+
+    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+
+    payload = {
+        'input': message,
+        'instructions': instructions,
+        'conversation_id': str(conversation.id),
+        'tools': tools,
+    }
+    if is_new_session:
+        payload['new_session'] = True
+
+    conversation_id_str = str(conversation.id)
+
+    def _proxy_stream():
+        try:
+            with http_requests.post(
+                f"{base_url}/api/hubs/me/assistant/chat/stream/",
+                json=payload,
+                headers={
+                    'Authorization': f'Bearer {config.hub_jwt}',
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
+                },
+                stream=True,
+                timeout=(10, 300),
+            ) as resp:
+                if resp.status_code != 200:
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get('error', f'Cloud error {resp.status_code}')
+                    except Exception:
+                        err_msg = f'Cloud error {resp.status_code}'
+                    yield f'data: {json.dumps({"type": "error", "message": err_msg})}\n\n'
+                    yield 'data: [DONE]\n\n'
+                    return
+
+                # Inject conversation_id as first event so frontend can update its state
+                yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
+
+                # Pass-through SSE lines from Cloud
+                for line in resp.iter_lines(decode_unicode=True):
+                    if line:
+                        yield line + '\n\n'
+                    # Empty lines are SSE delimiters — forward them
+                    # (iter_lines strips them, so we add \n\n after each data line above)
+
+        except http_requests.exceptions.Timeout:
+            yield f'data: {json.dumps({"type": "error", "message": "Request timed out. Please try again."})}\n\n'
+            yield 'data: [DONE]\n\n'
+        except Exception as e:
+            logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
+            yield f'data: {json.dumps({"type": "error", "message": "Connection error. Please try again."})}\n\n'
+            yield 'data: [DONE]\n\n'
+
+    response = StreamingHttpResponse(_proxy_stream(), content_type='text/event-stream')
+    response['X-Conversation-Id'] = conversation_id_str
+    response['X-Accel-Buffering'] = 'no'
+    response['Cache-Control'] = 'no-cache'
+    return response
+
+
+@login_required
+@permission_required('assistant.use_chat')
 def poll_progress(request, request_id):
     """
     Poll for progress updates on a background chat request.
@@ -806,6 +956,7 @@ def poll_progress(request, request_id):
                 'tool_name': action['tool_name'],
                 'tool_args': action['tool_args'],
                 'description': action['description'],
+                'confirmation_data': action.get('confirmation_data'),
             }, request=request))
 
         resp = HttpResponse(''.join(html_parts))
@@ -848,105 +999,213 @@ def confirm_action(request, log_id):
             'content': 'Action not found or already processed.',
         }, request=request))
 
+    # execute_plan runs asynchronously so per-step progress is streamed
+    # to the frontend via the standard poll_progress mechanism.
+    if action_log.tool_name == 'execute_plan':
+        return _confirm_execute_plan_async(request, action_log, user_id)
+
     result = execute_confirmed_action(action_log, request)
 
     if result['success']:
-        conversation = action_log.conversation
-        context = conversation.context or 'general'
-
-        from apps.accounts.models import LocalUser
-        user = LocalUser.objects.get(id=user_id)
-
-        # Check if this action belongs to a group (same llm_message_id).
-        # If sibling actions are still unconfirmed, don't resume the loop yet.
-        llm_message_id = action_log.llm_message_id
-        if llm_message_id:
-            sibling_pending = AssistantActionLog.objects.filter(
-                llm_message_id=llm_message_id,
-                confirmed=False,
-            ).exclude(id=action_log.id)
-            if sibling_pending.exists():
-                # More confirmations needed — tell the user and wait
-                remaining = sibling_pending.count()
-                noun = 'action' if remaining == 1 else 'actions'
-                return HttpResponse(render_to_string('assistant/partials/message.html', {
-                    'role': 'system',
-                    'content': f'Action confirmed. Please confirm the remaining {remaining} {noun} above to continue.',
-                }, request=request))
-
-            # All siblings confirmed — collect all their results in order
-            all_logs = AssistantActionLog.objects.filter(
-                llm_message_id=llm_message_id,
-            ).order_by('created_at')
-            resume_input = []
-            for log in all_logs:
-                cid = log.tool_args.get('_call_id', '')
-                if cid:
-                    resume_input.append({
-                        'type': 'function_call_output',
-                        'call_id': cid,
-                        'output': _json_dumps(log.result),
-                    })
-            if not resume_input:
-                # Fallback: use just the current action's result
-                resume_input = None
-        else:
-            resume_input = None
-
-        # Build resume_input for single (ungrouped) actions
-        if resume_input is None:
-            call_id = action_log.tool_args.get('_call_id', '')
-            if call_id:
-                resume_input = [{
-                    'type': 'function_call_output',
-                    'call_id': call_id,
-                    'output': _json_dumps(result.get('result', {})),
-                }]
-            else:
-                # Fallback: no call_id stored (old action logs)
-                resume_input = (
-                    f"[Tool '{action_log.tool_name}' executed successfully. "
-                    f"Result: {_json_dumps(result.get('result', {}))}] "
-                    f"Continue with the next steps."
-                )
-
-        request_id = uuid_mod.uuid4().hex[:16]
-        session_data = dict(request.session)
-
-        def _resume_loop():
-            from django.test import RequestFactory
-            fake_request = RequestFactory().get('/')
-            fake_request.session = session_data
-            try:
-                loop_result = run_agentic_loop(
-                    user, conversation, resume_input, context, fake_request,
-                    request_id=request_id,
-                )
-                cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
-                _set_progress(request_id, 'complete', '')
-            except AgenticLoopError as e:
-                cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
-                _set_progress(request_id, 'error', str(e))
-            except Exception as e:
-                logger.error(f"[ASSISTANT] Resume loop error: {e}", exc_info=True)
-                cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
-                _set_progress(request_id, 'error', 'Something went wrong.')
-
-        thread = threading.Thread(target=_resume_loop, daemon=True)
-        thread.start()
-
-        # Return a polling partial so the frontend waits for the resumed loop
-        html = render_to_string('assistant/partials/progress.html', {
-            'request_id': request_id,
-            'message': 'Continuing setup...',
-        }, request=request)
-        return HttpResponse(html)
+        return _resume_loop_after_confirm(request, action_log, result, user_id)
     else:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
             'content': result['message'],
             'error': True,
         }, request=request))
+
+
+def _confirm_execute_plan_async(request, action_log, user_id):
+    """
+    Run execute_plan in a background thread, streaming per-step progress via
+    the standard poll_progress cache mechanism.
+
+    Returns a progress partial immediately. When the plan finishes, the
+    agentic loop is resumed (same as a normal confirm success flow).
+    """
+    request_id = uuid_mod.uuid4().hex[:16]
+    session_data = dict(request.session)
+    conversation = action_log.conversation
+    context = (conversation.context or 'general') if conversation else 'general'
+
+    from apps.accounts.models import LocalUser
+    try:
+        user = LocalUser.objects.get(id=user_id)
+    except LocalUser.DoesNotExist:
+        return HttpResponse(render_to_string('assistant/partials/message.html', {
+            'role': 'system',
+            'content': 'User not found.',
+            'error': True,
+        }, request=request))
+
+    _set_progress(request_id, 'tool', 'Starting plan execution...')
+
+    def _run_plan():
+        from django.test import RequestFactory
+        fake_request = RequestFactory().get('/')
+        fake_request.session = session_data
+        try:
+            plan_result = execute_confirmed_action(
+                action_log, fake_request, plan_request_id=request_id,
+            )
+            if plan_result['success']:
+                # Build resume_input and continue the agentic loop
+                call_id = action_log.tool_args.get('_call_id', '')
+                if call_id:
+                    resume_input = [{
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps(plan_result.get('result', {})),
+                    }]
+                else:
+                    resume_input = (
+                        f"[execute_plan completed. "
+                        f"Result: {_json_dumps(plan_result.get('result', {}))}] "
+                        f"Continue with the next steps."
+                    )
+                try:
+                    loop_result = run_agentic_loop(
+                        user, conversation, resume_input, context, fake_request,
+                        request_id=request_id,
+                    )
+                    cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'complete', '')
+                except AgenticLoopError as e:
+                    cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', str(e))
+                except Exception as e:
+                    logger.error(f"[ASSISTANT] Plan resume loop error: {e}", exc_info=True)
+                    cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', 'Something went wrong.')
+            else:
+                # Plan failed — build an error message with rollback info
+                err_msg = plan_result.get('message', 'Plan execution failed.')
+                plan_exec_result = plan_result.get('result', {})
+                rolled_back = plan_exec_result.get('rolled_back', [])
+                if rolled_back:
+                    rb_names = [
+                        r.get('description', r.get('action', ''))
+                        for r in rolled_back if r.get('rolled_back')
+                    ]
+                    if rb_names:
+                        err_msg += f" Rolled back: {', '.join(rb_names)}."
+                cache.set(
+                    f'assistant_result_{request_id}',
+                    {'error': err_msg},
+                    timeout=PROGRESS_CACHE_TIMEOUT,
+                )
+                _set_progress(request_id, 'error', err_msg)
+        except Exception as e:
+            logger.error(f"[ASSISTANT] execute_plan async error: {e}", exc_info=True)
+            cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', 'Something went wrong.')
+
+    thread = threading.Thread(target=_run_plan, daemon=True)
+    thread.start()
+
+    html = render_to_string('assistant/partials/progress.html', {
+        'request_id': request_id,
+        'message': 'Executing plan...',
+    }, request=request)
+    return HttpResponse(html)
+
+
+def _resume_loop_after_confirm(request, action_log, result, user_id):
+    """
+    After a non-plan confirmed action succeeds, resume the agentic loop
+    in a background thread and return a progress partial.
+    """
+    conversation = action_log.conversation
+    context = conversation.context or 'general'
+
+    from apps.accounts.models import LocalUser
+    user = LocalUser.objects.get(id=user_id)
+
+    # Check if this action belongs to a group (same llm_message_id).
+    # If sibling actions are still unconfirmed, don't resume the loop yet.
+    llm_message_id = action_log.llm_message_id
+    if llm_message_id:
+        sibling_pending = AssistantActionLog.objects.filter(
+            llm_message_id=llm_message_id,
+            confirmed=False,
+        ).exclude(id=action_log.id)
+        if sibling_pending.exists():
+            # More confirmations needed — tell the user and wait
+            remaining = sibling_pending.count()
+            noun = 'action' if remaining == 1 else 'actions'
+            return HttpResponse(render_to_string('assistant/partials/message.html', {
+                'role': 'system',
+                'content': f'Action confirmed. Please confirm the remaining {remaining} {noun} above to continue.',
+            }, request=request))
+
+        # All siblings confirmed — collect all their results in order
+        all_logs = AssistantActionLog.objects.filter(
+            llm_message_id=llm_message_id,
+        ).order_by('created_at')
+        resume_input = []
+        for log in all_logs:
+            cid = log.tool_args.get('_call_id', '')
+            if cid:
+                resume_input.append({
+                    'type': 'function_call_output',
+                    'call_id': cid,
+                    'output': _json_dumps(log.result),
+                })
+        if not resume_input:
+            # Fallback: use just the current action's result
+            resume_input = None
+    else:
+        resume_input = None
+
+    # Build resume_input for single (ungrouped) actions
+    if resume_input is None:
+        call_id = action_log.tool_args.get('_call_id', '')
+        if call_id:
+            resume_input = [{
+                'type': 'function_call_output',
+                'call_id': call_id,
+                'output': _json_dumps(result.get('result', {})),
+            }]
+        else:
+            # Fallback: no call_id stored (old action logs)
+            resume_input = (
+                f"[Tool '{action_log.tool_name}' executed successfully. "
+                f"Result: {_json_dumps(result.get('result', {}))}] "
+                f"Continue with the next steps."
+            )
+
+    request_id = uuid_mod.uuid4().hex[:16]
+    session_data = dict(request.session)
+
+    def _resume_loop():
+        from django.test import RequestFactory
+        fake_request = RequestFactory().get('/')
+        fake_request.session = session_data
+        try:
+            loop_result = run_agentic_loop(
+                user, conversation, resume_input, context, fake_request,
+                request_id=request_id,
+            )
+            cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'complete', '')
+        except AgenticLoopError as e:
+            cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', str(e))
+        except Exception as e:
+            logger.error(f"[ASSISTANT] Resume loop error: {e}", exc_info=True)
+            cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', 'Something went wrong.')
+
+    thread = threading.Thread(target=_resume_loop, daemon=True)
+    thread.start()
+
+    # Return a polling partial so the frontend waits for the resumed loop
+    html = render_to_string('assistant/partials/progress.html', {
+        'request_id': request_id,
+        'message': 'Continuing setup...',
+    }, request=request)
+    return HttpResponse(html)
 
 
 @login_required
@@ -1519,6 +1778,7 @@ def format_confirmation_text(tool_name, tool_args):
         'update_contract_status': lambda a: f"Update contract {a.get('contract_id', '')} → {a.get('status', '')}",
         # Cash Register
         'create_cash_register': lambda a: f"Create cash register: {a.get('name', '')}",
+        'close_cash_session': lambda a: f"Close cash session: {a.get('session_id', '')} (closing balance: {a.get('closing_balance', '')})",
         # Orders / Kitchen
         'create_order': lambda a: f"Create order: {a.get('table_id', a.get('customer_name', ''))}",
         'update_order_status': lambda a: f"Update order {a.get('order_id', '')} → {a.get('status', '')}",

@@ -1,6 +1,42 @@
 {% load i18n djicons %}
 
 <div class="chat-message chat-system" id="confirmation-{{ log_id }}">
+
+    {% if confirmation_data %}
+    {# Rich structured confirmation card #}
+    <div class="card" style="margin-bottom: 0.5rem;">
+        <div class="card-header" style="display:flex; align-items:center; gap:0.5rem;">
+            {% icon "information-circle-outline" %}
+            <span class="font-semibold">{{ confirmation_data.title }}</span>
+            {% if confirmation_data.badge %}
+            <span class="badge {{ confirmation_data.badge }}" style="margin-left:auto;">{% trans "Review" %}</span>
+            {% endif %}
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <table class="table table-sm" style="margin:0;">
+                <tbody>
+                    {% for row in confirmation_data.rows %}
+                    <tr>
+                        <td class="text-muted" style="white-space:nowrap; width:45%;">{{ row.label }}</td>
+                        <td class="font-mono {% if row.highlight %}{{ row.highlight }}{% endif %}">{{ row.value }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if confirmation_data.warning %}
+        <div class="card-footer">
+            <div class="callout callout-warning" style="margin:0;">
+                <div class="callout-icon">{% icon "warning-outline" %}</div>
+                <div class="callout-content">
+                    <div class="callout-text">{{ confirmation_data.warning }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    {# Plain text confirmation callout #}
     <div class="callout callout-warning">
         <div class="callout-icon">{% icon "shield-checkmark-outline" %}</div>
         <div class="callout-content">
@@ -8,6 +44,8 @@
             <div class="callout-text">{{ description }}</div>
         </div>
     </div>
+    {% endif %}
+
     <div class="flex gap-2 mt-2" id="confirmation-buttons-{{ log_id }}">
         <button hx-post="{% url 'assistant:confirm_action' log_id %}"
                 hx-target="#confirmation-{{ log_id }}"

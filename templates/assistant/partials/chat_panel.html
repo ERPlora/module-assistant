@@ -44,11 +44,8 @@
     <!-- Input area -->
     <div class="p-4 border-t border-base-200">
         <form id="chat-form"
-              hx-post="{% url 'assistant:chat_message' %}"
-              hx-target="#chat-messages"
-              hx-swap="beforeend"
-              hx-on::before-request="chatBeforeRequest(this)"
-              hx-on::after-request="chatAfterRequest(this, event)"
+              data-stream-url="{% url 'assistant:chat_stream' %}"
+              data-fallback-url="{% url 'assistant:chat_message' %}"
               enctype="multipart/form-data">
             {% csrf_token %}
             <input type="hidden" name="conversation_id" id="conv-id" value="{{ last_conversation.id|default:'' }}">
@@ -125,4 +122,16 @@
     #chat-submit.is-loading #chat-loading { display: inline-block !important; }
     #file-preview-img.active { display: block; }
     #file-preview-icon.active { display: inline; }
+    .chat-tool-indicator {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 0.75rem; opacity: 0.65; padding: 4px 0;
+    }
+    .chat-tool-indicator .loading { width: 12px; height: 12px; }
+    .chat-streaming-cursor {
+        display: inline-block; width: 2px; height: 1em;
+        background: currentColor; vertical-align: text-bottom;
+        animation: blink 0.8s step-end infinite;
+        margin-left: 1px;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 </style>

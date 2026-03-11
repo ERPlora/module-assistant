@@ -12,6 +12,7 @@ urlpatterns = [
 
     # API (POST)
     path('chat/send/', views.chat, name='chat_message'),
+    path('chat/stream/', views.chat_stream, name='chat_stream'),
     path('poll/<str:request_id>/', views.poll_progress, name='poll_progress'),
     path('confirm/<str:log_id>/', views.confirm_action, name='confirm_action'),
     path('cancel/<str:log_id>/', views.cancel_action, name='cancel_action'),

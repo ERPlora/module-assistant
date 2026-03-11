@@ -56,6 +56,39 @@ class AssistantActionLog(HubBaseModel):
         return f"{self.tool_name} ({status}) by {self.user.name}"
 
 
+class AssistantMemory(HubBaseModel):
+    """
+    Persistent memories across AI assistant sessions.
+
+    The AI can save key facts about the business or preferences here
+    and they will be injected into every system prompt so it remembers
+    them across conversations.
+    """
+    key = models.CharField(
+        max_length=200,
+        help_text="Short label identifying this memory (e.g. 'owner_name', 'lunch_menu')",
+    )
+    content = models.TextField(
+        help_text="The actual memory content",
+    )
+
+    class Meta(HubBaseModel.Meta):
+        db_table = 'assistant_assistantmemory'
+        ordering = ['key']
+        indexes = [
+            models.Index(fields=['hub_id', 'key']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['hub_id', 'key'],
+                name='unique_assistant_memory_per_hub',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Memory({self.key})"
+
+
 class AssistantFeedback(HubBaseModel):
     """
     Tracks feedback events for product improvement.

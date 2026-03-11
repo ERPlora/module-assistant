@@ -74,6 +74,22 @@ class AssistantTool:
     def execute(self, args: dict, request) -> dict:
         raise NotImplementedError(f"Tool {self.name} must implement execute()")
 
+    def get_confirmation_data(self, args: dict, request) -> dict | None:
+        """
+        Return structured data to display in the confirmation UI.
+
+        Override this in tools that benefit from showing rich context before
+        the user confirms. Return None to show only the plain text description.
+
+        The returned dict supports:
+            title   (str)  — card header, e.g. "Cash Register Summary"
+            rows    (list) — list of {"label": str, "value": str} pairs
+            warning (str)  — optional warning line shown below the rows
+            badge   (str)  — optional CSS color class for the header badge
+                             (e.g. "color-warning", "color-error", "color-primary")
+        """
+        return None
+
     def safe_execute(self, args: dict, request) -> dict:
         """
         Wrapper around execute() that catches common exceptions
@@ -161,6 +177,8 @@ def discover_tools():
         'assistant.tools.configure_tools',
         'assistant.tools.analytics_tools',
         'assistant.tools.blueprint_tools',
+        'assistant.tools.memory_tools',
+        'assistant.tools.search_tools',
     ]
     for mod_name in core_modules:
         try:
