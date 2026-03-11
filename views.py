@@ -800,11 +800,51 @@ def confirm_action(request, log_id):
     result = execute_confirmed_action(action_log, request)
 
     if result['success']:
-        return HttpResponse(render_to_string('assistant/partials/message.html', {
-            'role': 'system',
-            'content': result['message'],
-            'success': True,
-        }, request=request))
+        # Resume agentic loop: send tool result back to the LLM
+        # so it can continue with the next setup steps
+        conversation = action_log.conversation
+        context = conversation.context or 'general'
+
+        from apps.accounts.models import LocalUser
+        user = LocalUser.objects.get(id=user_id)
+
+        resume_msg = (
+            f"[Tool '{action_log.tool_name}' was confirmed and executed successfully. "
+            f"Result: {_json_dumps(result.get('result', {}))}] "
+            f"Continue with the next steps."
+        )
+
+        request_id = uuid_mod.uuid4().hex[:16]
+        session_data = dict(request.session)
+
+        def _resume_loop():
+            from django.test import RequestFactory
+            fake_request = RequestFactory().get('/')
+            fake_request.session = session_data
+            try:
+                loop_result = run_agentic_loop(
+                    user, conversation, resume_msg, context, fake_request,
+                    request_id=request_id,
+                )
+                cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
+                _set_progress(request_id, 'complete', '')
+            except AgenticLoopError as e:
+                cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+                _set_progress(request_id, 'error', str(e))
+            except Exception as e:
+                logger.error(f"[ASSISTANT] Resume loop error: {e}", exc_info=True)
+                cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
+                _set_progress(request_id, 'error', 'Something went wrong.')
+
+        thread = threading.Thread(target=_resume_loop, daemon=True)
+        thread.start()
+
+        # Return a polling partial so the frontend waits for the resumed loop
+        html = render_to_string('assistant/partials/progress.html', {
+            'request_id': request_id,
+            'message': 'Continuing setup...',
+        }, request=request)
+        return HttpResponse(html)
     else:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
