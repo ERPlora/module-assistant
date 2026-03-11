@@ -395,11 +395,13 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
 
                 # Confirmation check
                 if tool.requires_confirmation:
+                    # Store call_id so we can resume the loop after confirmation
+                    args_with_call_id = {**tool_args, '_call_id': call_id}
                     action_log = AssistantActionLog.objects.create(
                         user_id=user_id,
                         conversation=conversation,
                         tool_name=tool_name,
-                        tool_args=tool_args,
+                        tool_args=args_with_call_id,
                         result={},
                         success=False,
                         confirmed=False,
@@ -552,8 +554,11 @@ def execute_confirmed_action(action_log, request):
     action_log.confirmed = True
     action_log.save(update_fields=['confirmed'])
 
+    # Remove internal _call_id before passing args to the tool
+    exec_args = {k: v for k, v in action_log.tool_args.items() if k != '_call_id'}
+
     try:
-        result = tool.safe_execute(action_log.tool_args, request)
+        result = tool.safe_execute(exec_args, request)
         # safe_execute returns error dict instead of raising for common errors
         if isinstance(result, dict) and 'error' in result and len(result) == 1:
             action_log.result = result
@@ -808,11 +813,21 @@ def confirm_action(request, log_id):
         from apps.accounts.models import LocalUser
         user = LocalUser.objects.get(id=user_id)
 
-        resume_msg = (
-            f"[Tool '{action_log.tool_name}' was confirmed and executed successfully. "
-            f"Result: {_json_dumps(result.get('result', {}))}] "
-            f"Continue with the next steps."
-        )
+        # Build function_call_output using the stored call_id
+        call_id = action_log.tool_args.get('_call_id', '')
+        if call_id:
+            resume_input = [{
+                'type': 'function_call_output',
+                'call_id': call_id,
+                'output': _json_dumps(result.get('result', {})),
+            }]
+        else:
+            # Fallback: no call_id stored (old action logs)
+            resume_input = (
+                f"[Tool '{action_log.tool_name}' executed successfully. "
+                f"Result: {_json_dumps(result.get('result', {}))}] "
+                f"Continue with the next steps."
+            )
 
         request_id = uuid_mod.uuid4().hex[:16]
         session_data = dict(request.session)
@@ -823,7 +838,7 @@ def confirm_action(request, log_id):
             fake_request.session = session_data
             try:
                 loop_result = run_agentic_loop(
-                    user, conversation, resume_msg, context, fake_request,
+                    user, conversation, resume_input, context, fake_request,
                     request_id=request_id,
                 )
                 cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
