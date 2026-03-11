@@ -21,6 +21,14 @@ from django.core.cache import cache
 logger = logging.getLogger(__name__)
 
 
+def _consume_post_install(request):
+    """Read and clear the post-install session flag set before server restart."""
+    data = request.session.pop('assistant_post_install', None)
+    if data:
+        request.session.modified = True
+    return data
+
+
 def build_system_prompt(request, context='general'):
     """
     Build the system prompt for the AI assistant.
@@ -48,6 +56,8 @@ def build_system_prompt(request, context='general'):
     module_entries = _collect_module_info(menu_items)
 
     # Build prompt parts
+    post_install = _consume_post_install(request)
+
     parts = [
         _base_instructions(hub_config.language),
         _user_context(user_name, user_role),
@@ -64,7 +74,7 @@ def build_system_prompt(request, context='general'):
     ]
 
     if context == 'setup':
-        parts.append(_setup_context(hub_config, store_config))
+        parts.append(_setup_context(hub_config, store_config, post_install))
 
     parts.append(_safety_rules())
 
@@ -78,44 +88,13 @@ def _base_instructions(language):
         'fr': 'French', 'it': 'Italian', 'pt': 'Portuguese',
     }.get(language, 'English')
 
-    return f"""You are an AI assistant for ERPlora, a modular POS/ERP system.
-You help users configure their hub, manage products, employees, and business operations.
+    return f"""You are an AI assistant for ERPlora (modular POS/ERP).
+Respond in the language the user writes in (hub language: {lang_name}, but user language takes priority).
+Be concise and proactive. Use tools for all actions.
 
-IMPORTANT: Detect the language the user is writing in and ALWAYS respond in THAT language.
-If the user writes in Spanish, respond in Spanish. If in French, respond in French, etc.
-The hub's configured language is {lang_name}, but the user's message language takes priority.
-Be concise, helpful, and proactive. Suggest next steps when appropriate.
-When you need to perform an action, use the available tools.
-
-## Dynamic Tool Loading
-You start with only hub core tools (configuration, modules, employees, roles, tax).
-To work with a specific module (e.g., inventory, sales, customers), you MUST first call `load_module_tools` with the module IDs you need.
-Example: to create products, first call `load_module_tools(modules=["inventory"])`, then use the inventory tools.
-You can load multiple modules at once: `load_module_tools(modules=["inventory", "sales", "customers"])`.
-Use `list_modules` to see which modules are installed and their IDs.
-
-## Module Recommendations
-When a user describes their business or asks which modules they need:
-1. Use the `get_module_catalog` tool to fetch ALL available modules with descriptions, functions, and industries
-2. Based on the user's business type, recommend the most relevant modules
-3. Indicate which modules are already installed vs need to be added
-4. Mention dependencies (if module A requires module B)
-5. Explain pricing: free modules can be installed directly, paid modules need to be purchased from the marketplace
-
-You can also use `list_business_types` to see available business types from the Blueprint system grouped by sector.
-
-## Handling Unknown Business Types
-If the user describes a business that does NOT match any blueprint type (e.g., "I have a coworking space", "I run an auto repair shop"):
-1. Do NOT force-fit a blueprint type. Tell the user you'll configure it manually.
-2. Use `get_module_catalog` to fetch ALL available modules with their `functional_unit`, `sector`, and `business_types` fields.
-3. Based on the user's business description, select the relevant modules:
-   - Match by `business_types` tags (e.g., modules tagged with "auto_repair")
-   - Match by `functional_unit` (e.g., FIN=finance, COM=commerce, ALM=warehouse, TPV=POS, VEN=sales, CRM=customers, RRH=HR)
-   - Match by `sector` (e.g., "professional_services", "education")
-   - Use common sense: every business needs sales+cash_register+inventory+invoicing+tax at minimum
-4. Use `install_modules` to install the selected modules in a single call.
-5. Continue with business info and tax setup as normal (steps 4-5 of the setup flow).
-6. For products: create them manually with `create_product` since there's no catalog for this business type."""
+## Tool Loading
+Core tools always available. For module-specific work, call `load_module_tools(["module_id"])` first — deps resolved automatically.
+Unload with `unload_module_tools` when switching context. Loaded tools persist across messages."""
 
 
 def _user_context(user_name, user_role):
@@ -177,20 +156,10 @@ def _collect_module_info(menu_items):
 
 def _modules_context(module_entries):
     if not module_entries:
-        return """## Active Modules
-No modules installed yet. Use `get_module_catalog` to browse available modules."""
+        return "## Active Modules\nNone. Use `get_module_catalog` to install modules."
 
-    lines = []
-    for mid, label, desc in module_entries:
-        if desc:
-            lines.append(f"- **{label}** ({mid}): {desc}")
-        else:
-            lines.append(f"- **{label}** ({mid})")
-
-    return f"""## Active Modules ({len(module_entries)} installed)
-{chr(10).join(lines)}
-
-Use `get_module_catalog` to see all available modules (including those not yet installed)."""
+    ids = [mid for mid, _, _ in module_entries]
+    return f"## Active Modules ({len(module_entries)})\n{', '.join(ids)}"
 
 
 def _tools_context(context, request):
@@ -220,20 +189,23 @@ def _tools_context(context, request):
             mod = getattr(tool_inst, 'module_id', None) or 'hub_core'
             by_module.setdefault(mod, []).append(tool_inst)
 
-        lines = [f"## Available Tools ({len(tools)} core tools loaded)"]
+        # Compact: just tool names grouped by module, mark writes with *
+        core_names = []
+        module_names = []
         for mod in sorted(by_module.keys()):
-            mod_tools = by_module[mod]
-            names = []
-            for t in mod_tools:
-                suffix = ' (write)' if t.requires_confirmation else ''
-                names.append(f"{t.name}{suffix}")
-            lines.append(f"- **{mod}**: {', '.join(names)}")
+            for t in by_module[mod]:
+                entry = f"{t.name}{'*' if t.requires_confirmation else ''}"
+                if mod == 'hub_core':
+                    core_names.append(entry)
+                else:
+                    module_names.append(f"{entry}[{mod}]")
 
-        lines.append(
-            "\nTo access module-specific tools (inventory, sales, customers, etc.), "
-            "call `load_module_tools` with the module IDs you need."
-        )
-
+        lines = [f"## Core Tools ({len(tools)}, *=requires confirmation)"]
+        if core_names:
+            lines.append(', '.join(core_names))
+        if module_names:
+            lines.append('Loaded module tools: ' + ', '.join(module_names))
+        lines.append("Use `load_module_tools([id])` to load module tools. `unload_module_tools` to free context.")
         return '\n'.join(lines)
     except Exception as e:
         logger.debug(f"[ASSISTANT] Error building tools context: {e}")
@@ -426,17 +398,16 @@ def _conversation_history(user_id):
 
         lines = ['## Recent Conversations']
         for conv in recent:
-            date_str = conv.updated_at.strftime('%Y-%m-%d %H:%M')
-            title = conv.title or conv.first_message[:50] if hasattr(conv, 'first_message') and conv.first_message else 'Untitled'
-            summary = conv.summary[:150] if conv.summary else ''
-            lines.append(f"- [{date_str}] {title}: {summary}")
+            date_str = conv.updated_at.strftime('%m-%d %H:%M')
+            summary = conv.summary[:100] if conv.summary else ''
+            lines.append(f"- {date_str}: {summary}")
 
         return '\n'.join(lines)
     except Exception:
         return ''
 
 
-def _setup_context(hub_config, store_config):
+def _setup_context(hub_config, store_config, post_install=None):
     """Build setup context for AI-driven initial configuration."""
     # Determine what's already configured
     has_region = bool(hub_config.language and hub_config.country_code)
@@ -468,8 +439,19 @@ def _setup_context(hub_config, store_config):
 
     steps_text = '\n'.join(f"- {s}" for s in steps)
 
+    post_install_notice = ''
+    if post_install:
+        mods = ', '.join(post_install.get('modules_installed', [])) or 'several'
+        types = ', '.join(post_install.get('type_codes', []))
+        post_install_notice = (
+            f"\n\n### ⚡ Just resumed after server restart\n"
+            f"Modules just installed: **{mods}** (for business type: {types}). "
+            f"The server restarted to apply them. Continue the setup from where you left off — "
+            f"do NOT ask the user about business type or modules again."
+        )
+
     return f"""## SETUP MODE — Initial Hub Configuration
-You are helping the user set up their hub for the FIRST TIME through a conversational flow.
+You are helping the user set up their hub for the FIRST TIME through a conversational flow.{post_install_notice}
 This replaces the traditional setup wizard. Be friendly, conversational, and guide them step by step.
 
 ### Current Status

@@ -520,11 +520,11 @@ class InstallModules(AssistantTool):
 class LoadModuleTools(AssistantTool):
     name = "load_module_tools"
     description = (
-        "Load AI tools for specific modules. By default only hub core tools are available. "
-        "Call this to load tools for the modules you need to work with. "
-        "Example: to create products, first load inventory tools with load_module_tools(modules=['inventory']). "
-        "You can load multiple modules at once. "
-        "Returns the list of newly available tool names."
+        "Load AI tools for specific modules. Only hub core tools are available by default. "
+        "Call this before using any module-specific tool. "
+        "Dependencies are resolved automatically — e.g. loading 'sales' also loads 'customers' and 'inventory'. "
+        "Loaded tools persist across messages in this conversation. "
+        "Example: load_module_tools(modules=['inventory']) to create products."
     )
     parameters = {
         "type": "object",
@@ -532,11 +532,7 @@ class LoadModuleTools(AssistantTool):
             "modules": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "List of module IDs to load tools for "
-                    "(e.g., ['inventory', 'sales', 'customers']). "
-                    "Use list_modules to see available module IDs."
-                ),
+                "description": "Module IDs to load (e.g. ['inventory'] or ['sales']). Dependencies auto-included.",
             },
         },
         "required": ["modules"],
@@ -544,27 +540,65 @@ class LoadModuleTools(AssistantTool):
     }
 
     def execute(self, args, request):
-        from assistant.tools import TOOL_REGISTRY, _get_active_module_ids
+        from assistant.tools import TOOL_REGISTRY, _get_active_module_ids, resolve_module_dependencies
 
         requested = args.get('modules', [])
         if not requested:
             return {"error": "Provide at least one module ID"}
 
         active = set(_get_active_module_ids())
-        loaded_names = []
-        not_found = []
 
-        for mid in requested:
-            if mid not in active:
-                not_found.append(mid)
-                continue
+        # Resolve dependencies automatically
+        resolved, dep_map = resolve_module_dependencies(requested, active)
+
+        not_found = [mid for mid in resolved if mid not in active]
+        to_load = [mid for mid in resolved if mid in active]
+
+        loaded_names = []
+        for mid in to_load:
             for tool in TOOL_REGISTRY.values():
                 if tool.module_id == mid:
                     loaded_names.append(tool.name)
 
-        return {
+        result = {
             "loaded_tools": loaded_names,
             "loaded_count": len(loaded_names),
-            "not_found": not_found,
-            "message": f"Loaded {len(loaded_names)} tools from {len(requested) - len(not_found)} modules. These tools are now available for use.",
+            "loaded_for": to_load,
+        }
+        if dep_map:
+            result["auto_included_deps"] = dep_map
+        if not_found:
+            result["not_found"] = not_found
+        return result
+
+
+@register_tool
+class UnloadModuleTools(AssistantTool):
+    name = "unload_module_tools"
+    description = (
+        "Unload AI tools for modules you no longer need to free up context. "
+        "Call this when switching to a different domain (e.g. after creating products, "
+        "unload inventory before loading tables). "
+        "Hub core tools are never unloaded."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "modules": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Module IDs to unload (e.g. ['inventory', 'customers']).",
+            },
+        },
+        "required": ["modules"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        modules = args.get('modules', [])
+        if not modules:
+            return {"error": "Provide at least one module ID"}
+        return {
+            "unloaded": modules,
+            "message": f"Unloaded tools for: {', '.join(modules)}.",
         }

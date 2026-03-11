@@ -143,7 +143,7 @@ class ExecutePlan(AssistantTool):
             'bulk_create_zones': self._bulk_create_zones,
             'bulk_create_tables': self._bulk_create_tables,
             'bulk_set_business_hours': self._set_business_hours,
-            'install_blueprint': self._install_blueprint,
+            'install_blueprint': lambda p: self._install_blueprint(p, request),
             'install_blueprint_products': self._install_blueprint_products,
             'create_station': self._create_station,
         }
@@ -338,7 +338,7 @@ class ExecutePlan(AssistantTool):
         store_config.save()
         return {"message": "Setup completed"}
 
-    def _install_blueprint(self, params):
+    def _install_blueprint(self, params, request=None):
         """Install modules from blueprint for given business type codes."""
         from apps.configuration.models import HubConfig
         from apps.core.services.blueprint_service import BlueprintService
@@ -358,6 +358,17 @@ class ExecutePlan(AssistantTool):
         result = BlueprintService.install_blueprint(
             hub_config, type_codes, include_recommended=True,
         )
+
+        # Save post-install state to session so the AI can continue after restart.
+        if request is not None and result.get('modules_installed', 0) > 0:
+            installed_names = result.get('installed_module_ids', [])
+            request.session['assistant_post_install'] = {
+                'type_codes': type_codes,
+                'modules_installed': installed_names,
+                'roles_created': result.get('roles_created', 0),
+            }
+            request.session['assistant_loaded_modules'] = []  # reset — new modules not yet loaded
+            request.session.modified = True
 
         return {
             "message": f"Blueprint installed for {type_codes}",

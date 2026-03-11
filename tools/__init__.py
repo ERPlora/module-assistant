@@ -7,12 +7,56 @@ files across all active modules.
 Each module that wants AI integration creates an ai_tools.py file
 in its root directory with tools registered via @register_tool.
 """
+import copy
 import importlib
 import logging
 
 logger = logging.getLogger(__name__)
 
 TOOL_REGISTRY = {}
+
+
+def _make_strict_schema(schema: dict) -> dict:
+    """
+    Recursively transform a JSON Schema dict for OpenAI strict mode:
+    - For any object type (dict with "type": "object" or with "properties"):
+        - Adds "additionalProperties": False
+        - Sets "required" to the full list of keys in "properties"
+    - Recurses into property values, "items", "$defs", and "definitions".
+    Returns a deep copy — the original schema is never mutated.
+    """
+    schema = copy.deepcopy(schema)
+
+    def _process(node):
+        if not isinstance(node, dict):
+            return node
+
+        is_object = node.get('type') == 'object' or 'properties' in node
+
+        if is_object:
+            node['additionalProperties'] = False
+            props = node.get('properties', {})
+            if props:
+                node['required'] = list(props.keys())
+            else:
+                node['required'] = []
+            # Recurse into each property schema
+            for key in props:
+                props[key] = _process(props[key])
+
+        # Recurse into array items
+        if 'items' in node:
+            node['items'] = _process(node['items'])
+
+        # Recurse into $defs / definitions
+        for defs_key in ('$defs', 'definitions'):
+            if defs_key in node and isinstance(node[defs_key], dict):
+                for def_name in node[defs_key]:
+                    node[defs_key][def_name] = _process(node[defs_key][def_name])
+
+        return node
+
+    return _process(schema)
 
 
 class AssistantTool:
@@ -66,7 +110,8 @@ class AssistantTool:
             'type': 'function',
             'name': self.name,
             'description': desc,
-            'parameters': self.parameters,
+            'strict': True,
+            'parameters': _make_strict_schema(self.parameters),
         }
 
 
@@ -185,3 +230,41 @@ def get_tool(name: str):
     if not TOOL_REGISTRY:
         discover_tools()
     return TOOL_REGISTRY.get(name)
+
+
+def resolve_module_dependencies(module_ids, active_modules=None):
+    """
+    Resolve module IDs to include their dependencies (transitive).
+
+    Reads DEPENDENCIES from each module's module.py.
+    Returns (resolved_ids, dep_map) where:
+      - resolved_ids: set of all module IDs needed (requested + deps)
+      - dep_map: {mid: [dep1, dep2]} for the modules that had deps added
+    """
+    if active_modules is None:
+        active_modules = set(_get_active_module_ids())
+
+    resolved = set()
+    dep_map = {}
+
+    def _resolve(mid):
+        if mid in resolved:
+            return
+        resolved.add(mid)
+        if mid not in active_modules:
+            return
+        try:
+            import importlib
+            mod = importlib.import_module(f'{mid}.module')
+            deps = getattr(mod, 'DEPENDENCIES', []) or []
+            if deps:
+                dep_map[mid] = [d for d in deps if d not in module_ids]
+            for dep in deps:
+                _resolve(dep)
+        except Exception:
+            pass
+
+    for mid in module_ids:
+        _resolve(mid)
+
+    return resolved, dep_map

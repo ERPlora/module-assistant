@@ -244,14 +244,22 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     original_message = ai_input if isinstance(ai_input, str) else ''
     instructions = build_system_prompt(request, context)
 
-    # Dynamic tool loading: start with only hub core tools (module_id=None)
-    # The model can call load_module_tools to add module-specific tools
-    loaded_modules = set()
-    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
-
-    # Cloud manages conversation history keyed by our own conversation.id
+    # Dynamic tool loading: restore from session so loaded state persists between messages.
+    # Only keep modules that are still active (prevents stale refs after uninstall).
+    from assistant.tools import _get_active_module_ids
+    active_module_ids = set(_get_active_module_ids())
     conversation_id = str(conversation.id)
     is_new_session = conversation.message_count == 0
+
+    # On new conversation, clear any stale loaded_modules from previous session.
+    if is_new_session:
+        request.session.pop('assistant_loaded_modules', None)
+        loaded_modules = set()
+    else:
+        session_loaded = request.session.get('assistant_loaded_modules', [])
+        loaded_modules = set(session_loaded) & active_module_ids
+
+    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
 
     response_text = ""
     pending_actions = []
@@ -435,11 +443,20 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         result = tool.safe_execute(tool_args, request)
 
                         # Dynamic tool loading: when load_module_tools succeeds,
-                        # add requested modules and rebuild the tools list
+                        # add requested modules, rebuild tools, and persist to session.
                         if tool_name == 'load_module_tools' and isinstance(result, dict) and 'error' not in result:
-                            for mid in tool_args.get('modules', []):
+                            for mid in result.get('loaded_for', tool_args.get('modules', [])):
                                 loaded_modules.add(mid)
                             tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+                            request.session['assistant_loaded_modules'] = list(loaded_modules)
+                            request.session.modified = True
+                        # Unload: when unload_module_tools is called, remove from session
+                        elif tool_name == 'unload_module_tools' and isinstance(result, dict) and 'error' not in result:
+                            for mid in result.get('unloaded', tool_args.get('modules', [])):
+                                loaded_modules.discard(mid)
+                            tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+                            request.session['assistant_loaded_modules'] = list(loaded_modules)
+                            request.session.modified = True
 
                         is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
                         action_log = AssistantActionLog.objects.create(
