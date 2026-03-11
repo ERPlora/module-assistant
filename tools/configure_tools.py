@@ -38,6 +38,16 @@ class ExecutePlan(AssistantTool):
         "MUST match EXACTLY what you described — same names, same prices, same quantities. "
         "Never substitute generic or simplified data for the specific details you showed the user."
     )
+    short_description = (
+        "Execute a multi-step business configuration plan atomically. "
+        "Actions: set_regional_config, set_business_info, set_tax_config, create_role, create_employee, "
+        "create_tax_class, update_store_config, complete_setup, create_category, create_product, "
+        "create_service_category, create_service, create_payment_method, set_business_hours, "
+        "create_zone, create_table, bulk_create_zones, bulk_create_tables, install_blueprint, "
+        "install_blueprint_products, create_station. "
+        "Steps run in order; failures reported but execution continues. "
+        "ALWAYS use exact names/prices/quantities you showed the user — never substitute."
+    )
     requires_confirmation = True
     required_permission = None
     examples = [

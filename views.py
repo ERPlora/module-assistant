@@ -1255,6 +1255,80 @@ def _process_pdf_upload(uploaded_file, message):
         )
 
 
+def _summarize_plan_steps(steps):
+    """Build a compact human-readable summary of execute_plan steps."""
+    from collections import Counter
+    # Actions with their own named summary
+    named = {
+        'set_regional_config': 'set region',
+        'set_business_info': None,  # will use business_name
+        'set_tax_config': None,     # will use rate
+        'complete_setup': 'complete setup',
+        'install_blueprint': None,  # will use type_codes
+        'install_blueprint_products': None,  # will use business_type
+    }
+    # Countable actions
+    counts = Counter()
+    parts = []
+    seen_named = []
+
+    for step in steps:
+        action = step.get('action', '')
+        params = step.get('params', {})
+
+        if action == 'set_business_info':
+            name = params.get('business_name', '')
+            seen_named.append(f"set business: {name}" if name else 'set business info')
+        elif action == 'set_tax_config':
+            rate = params.get('tax_rate', '')
+            seen_named.append(f"set tax {rate}%" if rate else 'set tax config')
+        elif action == 'set_regional_config':
+            seen_named.append('set region')
+        elif action == 'install_blueprint':
+            type_codes = params.get('type_codes', [])
+            label = ', '.join(type_codes) if type_codes else 'blueprint'
+            seen_named.append(f"install blueprint ({label})")
+        elif action == 'install_blueprint_products':
+            bt = params.get('business_type', '')
+            seen_named.append(f"import products ({bt})" if bt else 'import products')
+        elif action == 'complete_setup':
+            seen_named.append('complete setup')
+        elif action in ('create_role', 'create_employee', 'create_tax_class',
+                        'create_category', 'create_product', 'create_service',
+                        'create_service_category', 'create_payment_method',
+                        'create_zone', 'create_table', 'create_station',
+                        'set_business_hours',
+                        'bulk_create_zones', 'bulk_create_tables',
+                        'update_store_config'):
+            counts[action] += 1
+        else:
+            counts[action] += 1
+
+    # Build count labels
+    label_map = {
+        'create_role': 'role', 'create_employee': 'employee',
+        'create_tax_class': 'tax class', 'create_category': 'category',
+        'create_product': 'product', 'create_service': 'service',
+        'create_service_category': 'service category',
+        'create_payment_method': 'payment method',
+        'create_zone': 'zone', 'create_table': 'table',
+        'create_station': 'station', 'set_business_hours': 'business hours',
+        'bulk_create_zones': 'zone batch', 'bulk_create_tables': 'table batch',
+        'update_store_config': 'store update',
+    }
+    for action, count in counts.items():
+        label = label_map.get(action, action.replace('_', ' '))
+        if count == 1:
+            parts.append(label)
+        else:
+            parts.append(f"{count} {label}s")
+
+    all_parts = seen_named + parts
+    total = len(steps)
+    summary = ', '.join(all_parts) if all_parts else f"{total} steps"
+    return f"Plan ({total} steps): {summary}"
+
+
 def format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
@@ -1270,7 +1344,7 @@ def format_confirmation_text(tool_name, tool_args):
         'set_business_info': lambda a: f"Set business: {a.get('business_name', '')}",
         'set_tax_config': lambda a: f"Set tax: {a.get('tax_rate', '')}% (included: {a.get('tax_included', '')})",
         'complete_setup_step': lambda a: "Complete hub setup",
-        'execute_plan': lambda a: f"Execute business plan ({len(a.get('steps', []))} steps)",
+        'execute_plan': lambda a: _summarize_plan_steps(a.get('steps', [])),
         # Inventory
         'create_product': lambda a: f"Create product: {a.get('name', '')} ({a.get('price', '')})",
         'update_product': lambda a: f"Update product: {a.get('product_id', '')}",

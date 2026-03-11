@@ -75,6 +75,7 @@ class ListBusinessTypes(AssistantTool):
         "Use this to help the user choose their business type during setup. "
         "Optionally filter by sector code (e.g., 'hospitality', 'retail', 'personal_services')."
     )
+    short_description = "List business types from Blueprint catalog, grouped by sector. Filter by sector code."
     parameters = {
         "type": "object",
         "properties": {
@@ -200,6 +201,7 @@ class GetModuleCatalog(AssistantTool):
         "asks what modules to install for their business type, or wants to "
         "know what modules are available and what they do."
     )
+    short_description = "Get all available modules from marketplace with functions, pricing, dependencies. Use before install_modules."
     parameters = {
         "type": "object",
         "properties": {
@@ -429,6 +431,10 @@ class InstallModules(AssistantTool):
         "Always call get_module_catalog first to get valid module_id slugs. "
         "Install all needed modules in a SINGLE call to avoid multiple restarts."
     )
+    short_description = (
+        "Download and install modules from the marketplace in bulk (triggers server restart). "
+        "Use get_module_catalog first. Install ALL needed modules in ONE call."
+    )
     module_id = None
     requires_confirmation = True
     parameters = {
@@ -526,6 +532,7 @@ class LoadModuleTools(AssistantTool):
         "Loaded tools persist across messages in this conversation. "
         "Example: load_module_tools(modules=['inventory']) to create products."
     )
+    short_description = "Load tools for a module (dependencies auto-included). Call before using module-specific tools."
     parameters = {
         "type": "object",
         "properties": {
@@ -581,6 +588,7 @@ class UnloadModuleTools(AssistantTool):
         "unload inventory before loading tables). "
         "Hub core tools are never unloaded."
     )
+    short_description = "Unload module tools to free context. Use when switching domains."
     parameters = {
         "type": "object",
         "properties": {

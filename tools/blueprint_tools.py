@@ -44,6 +44,7 @@ class SearchBlueprintCatalog(AssistantTool):
         "Returns available products with images and prices. "
         "Use this to show the user what seed products are available before installing them."
     )
+    short_description = "Search blueprint product catalog by business type. Returns products+categories with prices."
     module_id = None  # core tool, always available
     parameters = {
         "type": "object",
@@ -178,6 +179,7 @@ class InstallBlueprintProducts(AssistantTool):
         "Can install all products for a business type or a selection by product codes. "
         "This creates categories and products in the local database."
     )
+    short_description = "Import seed products from blueprint catalog into local inventory. Use [\"*\"] for all products."
     module_id = None  # core tool, always available
     requires_confirmation = True
     parameters = {

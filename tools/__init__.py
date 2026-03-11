@@ -63,6 +63,7 @@ class AssistantTool:
     """Base class for all AI assistant tools."""
     name: str = ''
     description: str = ''
+    short_description: str = ''  # Compact 1-line version sent to LLM. Falls back to description.
     parameters: dict = {}
     module_id: str = None
     requires_confirmation: bool = False
@@ -97,9 +98,12 @@ class AssistantTool:
             raise  # Let unknown exceptions propagate for logging
 
     def to_openai_schema(self) -> dict:
-        """Convert tool to AI function calling schema (Responses API format)."""
-        desc = self.description
-        if self.examples:
+        """Convert tool to AI function calling schema (Responses API format).
+        Uses short_description if set (saves tokens), falls back to description.
+        Examples are appended only to the full description — not the short one.
+        """
+        desc = self.short_description or self.description
+        if not self.short_description and self.examples:
             import json
             examples_text = '\n'.join(
                 f"  {json.dumps(ex, ensure_ascii=False)}"
