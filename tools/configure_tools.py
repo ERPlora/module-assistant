@@ -26,7 +26,7 @@ class ExecutePlan(AssistantTool):
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
         "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint, "
-        "install_blueprint_products. "
+        "install_blueprint_products, create_station. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
@@ -145,6 +145,7 @@ class ExecutePlan(AssistantTool):
             'bulk_set_business_hours': self._set_business_hours,
             'install_blueprint': self._install_blueprint,
             'install_blueprint_products': self._install_blueprint_products,
+            'create_station': self._create_station,
         }
 
         handler = dispatch.get(action)
@@ -253,6 +254,11 @@ class ExecutePlan(AssistantTool):
     def _create_employee(self, params, request):
         from apps.accounts.models import LocalUser, Role
         hub_id = request.session.get('hub_id')
+
+        # Check for existing employee by name to avoid duplicates
+        existing = LocalUser.objects.filter(hub_id=hub_id, name=params['name']).first()
+        if existing:
+            return {"message": f"Employee '{params['name']}' already exists", "employee_id": str(existing.id), "name": existing.name}
 
         role_obj = Role.objects.filter(
             hub_id=hub_id, name=params.get('role_name', 'employee'), is_deleted=False,
@@ -597,3 +603,24 @@ class ExecutePlan(AssistantTool):
         for t in tables_data:
             results.append(self._create_table(t))
         return {"created": len([r for r in results if r.get('created')]), "results": results}
+
+    # ── Kitchen Stations ───────────────────────────────────────────
+
+    def _create_station(self, params):
+        from orders.models import KitchenStation
+        name = params.get('name', '')
+        if not name:
+            raise ValueError("Station name is required")
+
+        existing = KitchenStation.objects.filter(name__iexact=name).first()
+        if existing:
+            return {"message": f"Station '{name}' already exists", "id": str(existing.id)}
+
+        station = KitchenStation.objects.create(
+            name=name,
+            description=params.get('description', ''),
+            color=params.get('color', '#F97316'),
+            icon=params.get('icon', 'flame-outline'),
+            is_active=True,
+        )
+        return {"id": str(station.id), "name": station.name, "created": True}
