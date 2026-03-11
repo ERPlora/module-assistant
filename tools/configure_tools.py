@@ -25,7 +25,8 @@ class ExecutePlan(AssistantTool):
         "create_tax_class, update_store_config, complete_setup, "
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
-        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint. "
+        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint, "
+        "install_blueprint_products. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
@@ -143,6 +144,7 @@ class ExecutePlan(AssistantTool):
             'bulk_create_tables': self._bulk_create_tables,
             'bulk_set_business_hours': self._set_business_hours,
             'install_blueprint': self._install_blueprint,
+            'install_blueprint_products': self._install_blueprint_products,
         }
 
         handler = dispatch.get(action)
@@ -336,6 +338,20 @@ class ExecutePlan(AssistantTool):
             "roles_created": result.get('roles_created', 0),
             "result": result,
         }
+
+    def _install_blueprint_products(self, params):
+        """Install products from blueprint catalog into inventory."""
+        from assistant.tools import TOOL_REGISTRY
+        tool = TOOL_REGISTRY.get('install_blueprint_products')
+        if not tool:
+            raise ValueError("install_blueprint_products tool not loaded")
+        # Build args matching the tool's parameter schema
+        args = {
+            'product_codes': params.get('product_codes', ['*']),
+        }
+        if params.get('business_type'):
+            args['business_type'] = params['business_type']
+        return tool.execute(args, None)
 
     # ── Inventory: Categories & Products ───────────────────────────
 

@@ -99,13 +99,12 @@
                 var used = data.messages_used || 0;
                 var limit = data.messages_limit;
                 var remaining = Math.max(0, limit - used);
-                usageEl.textContent = remaining + '/' + limit;
-                usageEl.classList.remove('hidden');
-                if (remaining <= 10) usageEl.classList.add('color-warning');
-                if (remaining === 0) {
-                    usageEl.classList.remove('color-warning');
-                    usageEl.classList.add('color-error');
-                }
+                var pct = remaining / limit;
+                usageEl.textContent = used + '/' + limit;
+                usageEl.classList.remove('hidden', 'color-success', 'color-warning', 'color-error');
+                if (pct <= 0.1) usageEl.classList.add('color-error');
+                else if (pct <= 0.33) usageEl.classList.add('color-warning');
+                else usageEl.classList.add('color-success');
             }
         } catch(e) {}
     }

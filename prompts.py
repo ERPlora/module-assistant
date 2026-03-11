@@ -100,7 +100,20 @@ When a user describes their business or asks which modules they need:
 4. Mention dependencies (if module A requires module B)
 5. Explain pricing: free modules can be installed directly, paid modules need to be purchased from the marketplace
 
-You can also use `list_business_types` to see available business types from the Blueprint system (restaurant, hair_salon, clothing, etc.) grouped by sector."""
+You can also use `list_business_types` to see available business types from the Blueprint system grouped by sector.
+
+## Handling Unknown Business Types
+If the user describes a business that does NOT match any blueprint type (e.g., "I have a coworking space", "I run an auto repair shop"):
+1. Do NOT force-fit a blueprint type. Tell the user you'll configure it manually.
+2. Use `get_module_catalog` to fetch ALL available modules with their `functional_unit`, `sector`, and `business_types` fields.
+3. Based on the user's business description, select the relevant modules:
+   - Match by `business_types` tags (e.g., modules tagged with "auto_repair")
+   - Match by `functional_unit` (e.g., FIN=finance, COM=commerce, ALM=warehouse, TPV=POS, VEN=sales, CRM=customers, RRH=HR)
+   - Match by `sector` (e.g., "professional_services", "education")
+   - Use common sense: every business needs sales+cash_register+inventory+invoicing+tax at minimum
+4. Use `install_modules` to install the selected modules in a single call.
+5. Continue with business info and tax setup as normal (steps 4-5 of the setup flow).
+6. For products: create them manually with `create_product` since there's no catalog for this business type."""
 
 
 def _user_context(user_name, user_role):
@@ -364,7 +377,7 @@ def _recent_activity(user_id):
         # Skip read-only discovery tools
         skip_tools = {
             'get_hub_config', 'get_store_config', 'list_modules',
-            'list_available_blocks', 'get_selected_blocks', 'list_roles',
+            'list_business_types', 'get_selected_business_types', 'list_roles',
             'list_tax_classes', 'list_employees', 'get_module_catalog',
         }
 
@@ -473,21 +486,30 @@ Based on the answer, use ExecutePlan with `set_regional_config` to set:
 Use `list_business_types` to show available business types (optionally filtered by sector).
 Then use ExecutePlan with `install_blueprint` action:
 - params: {{"type_codes": ["restaurant"], "sector": "hospitality"}}
-This installs the essential modules, creates roles, and imports seed data (products, categories).
+This installs the essential modules, creates roles, compliance modules (per country), and tax presets.
 IMPORTANT: After install_blueprint, the hub will have new modules available. Tell the user what was installed.
 
-**Step 3: Ask for business details.**
+**Step 3: Install product catalog.**
+Use `install_blueprint_products` to install pre-built products with images from the blueprint catalog.
+- params: {{"product_codes": ["*"]}} to install all, or list specific codes
+- First use `search_blueprint_catalog` to show what's available
+- Products come with images, prices, categories, and correct tax classes
+- PREFER this over manually creating products with `create_product`
+
+**Step 4: Ask for business details.**
 Use ExecutePlan with `set_business_info`:
 - business_name, business_address, vat_number, phone, email
 
-**Step 4: Configure taxes.**
-Use ExecutePlan with `set_tax_config`:
-- tax_rate (e.g., 21 for Spain), tax_included (true/false)
-Also create tax classes with `create_tax_class` if needed (e.g., general 21%, reduced 10%, super-reduced 4% for Spain).
-
 **Step 5: Complete setup.**
 Use ExecutePlan with `complete_setup` to mark the hub as configured.
-Then congratulate the user and suggest next steps (add products, create employees, start selling).
+Then congratulate the user and suggest next steps (configure tables, create employees, start selling).
+
+### Product Management Guidelines
+- When the user asks to add products, FIRST check if a blueprint catalog exists with `list_available_catalogs`
+- If a catalog exists, suggest using `install_blueprint_products` instead of manual creation
+- Products from the catalog come with images, correct tax classes, and realistic prices
+- For custom products not in the catalog, use `create_product` via ExecutePlan
+- Users can export products to CSV with `export_products_csv` and import with `import_products_csv`
 
 ### Guidelines
 - Ask ONE question at a time, don't overwhelm the user

@@ -4,7 +4,11 @@ P0 Hub Core Tools — always available.
 These tools operate on the Hub's core configuration: HubConfig, StoreConfig,
 TaxClass, modules, roles, and employees.
 """
+import logging
+
 from assistant.tools import AssistantTool, register_tool
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -96,7 +100,6 @@ class ListBusinessTypes(AssistantTool):
         sector_filter = args.get('sector', '')
 
         try:
-            # Get sectors
             sectors_data = BlueprintService.get_sectors(language=language)
             sectors = sectors_data.get('sectors', []) if isinstance(sectors_data, dict) else sectors_data
 
@@ -108,7 +111,6 @@ class ListBusinessTypes(AssistantTool):
                 if sector_filter and sector_code != sector_filter:
                     continue
 
-                # Get types for this sector
                 types_data = BlueprintService.get_types(sector=sector_code, language=language)
                 types_list = types_data if isinstance(types_data, list) else []
 
@@ -174,7 +176,6 @@ class ListModules(AssistantTool):
                 "label": str(item.get("label", "")),
                 "icon": item.get("icon", ""),
             }
-            # Try to get description and navigation from module.py
             try:
                 mod = importlib.import_module(f"{mid}.module")
                 desc = getattr(mod, 'MODULE_DESCRIPTION', None)
@@ -218,7 +219,6 @@ class GetModuleCatalog(AssistantTool):
 
         base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
 
-        # Get installed module IDs
         modules_dir = Path(settings.MODULES_DIR)
         installed_ids = set()
         if modules_dir.exists():
@@ -226,7 +226,6 @@ class GetModuleCatalog(AssistantTool):
                 if d.is_dir() and not d.name.startswith('.'):
                     installed_ids.add(d.name.lstrip('_'))
 
-        # Fetch Hub token for authenticated requests (is_owned field)
         from apps.configuration.models import HubConfig
         hub_config = HubConfig.get_solo()
         auth_token = hub_config.hub_jwt or hub_config.cloud_api_token
@@ -255,8 +254,10 @@ class GetModuleCatalog(AssistantTool):
                     "module_id": mid,
                     "name": m.get('name', ''),
                     "description": m.get('description', ''),
+                    "functional_unit": m.get('functional_unit', ''),
+                    "sector": m.get('sector', ''),
+                    "business_types": m.get('business_types', []),
                     "functions": m.get('functions_names', []),
-                    "industries": m.get('industries', []),
                     "module_type": m.get('module_type', ''),
                     "price": str(m.get('price', 0)),
                     "is_installed": mid in installed_ids or m.get('slug', '') in installed_ids,
@@ -273,108 +274,6 @@ class GetModuleCatalog(AssistantTool):
 
         except Exception as e:
             return {"error": f"Failed to fetch catalog: {str(e)}"}
-
-
-@register_tool
-class InstallModules(AssistantTool):
-    name = "install_modules"
-    description = (
-        "Install modules from the Cloud marketplace in bulk. "
-        "Takes a list of module slugs (from get_module_catalog) and downloads+installs "
-        "them all at once, then schedules a server restart. "
-        "Use this when the user asks to install modules for their business. "
-        "Always call get_module_catalog first to get valid module_id slugs. "
-        "Install all needed modules in a SINGLE call to avoid multiple restarts."
-    )
-    module_id = None
-    requires_confirmation = True
-    parameters = {
-        "type": "object",
-        "properties": {
-            "module_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of module_id slugs to install (e.g., ['customers', 'inventory', 'sales'])",
-            },
-        },
-        "required": ["module_ids"],
-        "additionalProperties": False,
-    }
-
-    def execute(self, args, request):
-        import requests as http_requests
-        from pathlib import Path
-        from django.conf import settings
-        from django.core.cache import cache
-
-        module_ids = args.get('module_ids', [])
-        if not module_ids:
-            return {"error": "module_ids list is required"}
-
-        # Check which are already installed
-        modules_dir = Path(settings.MODULES_DIR)
-        installed_ids = set()
-        if modules_dir.exists():
-            for d in modules_dir.iterdir():
-                if d.is_dir() and not d.name.startswith('.'):
-                    installed_ids.add(d.name.lstrip('_'))
-
-        to_install = [mid for mid in module_ids if mid not in installed_ids]
-        already = [mid for mid in module_ids if mid in installed_ids]
-
-        if not to_install:
-            return {
-                "message": "All requested modules are already installed",
-                "already_installed": already,
-            }
-
-        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
-        from apps.configuration.models import HubConfig
-        hub_config = HubConfig.get_solo()
-        auth_token = hub_config.hub_jwt or hub_config.cloud_api_token
-
-        # Build install list with download URLs
-        modules_to_install = []
-        for mid in to_install:
-            modules_to_install.append({
-                'slug': mid,
-                'name': mid,
-                'download_url': f"{base_url}/api/marketplace/modules/{mid}/download/",
-            })
-
-        try:
-            from apps.core.services.module_install_service import ModuleInstallService
-
-            result = ModuleInstallService.bulk_download_and_install(
-                modules_to_install, auth_token,
-            )
-
-            if result.installed > 0:
-                # Invalidate caches
-                cache.delete('marketplace:modules_list')
-                cache.delete('marketplace:installed_modules')
-
-                ModuleInstallService.run_post_install(
-                    load_all=True, run_migrations=True, schedule_restart=True,
-                )
-
-                # Create roles for installed modules
-                try:
-                    from apps.marketplace.views import _create_roles_for_installed_modules
-                    _create_roles_for_installed_modules(to_install)
-                except Exception:
-                    pass
-
-            return {
-                "message": f"Installed {result.installed} modules. Server restart scheduled.",
-                "installed_count": result.installed,
-                "already_installed": already,
-                "errors": result.errors if result.errors else [],
-                "requires_restart": result.installed > 0,
-            }
-        except Exception as e:
-            logger.error(f"[ASSISTANT] Module install error: {e}", exc_info=True)
-            return {"error": f"Failed to install modules: {str(e)}"}
 
 
 @register_tool
@@ -487,7 +386,6 @@ class UpdateStoreConfig(AssistantTool):
     name = "update_store_config"
     description = "Update store/business configuration: name, address, VAT number, phone, email, tax settings"
     requires_confirmation = True
-    required_permission = "assistant.use_chat"
     parameters = {
         "type": "object",
         "properties": {
@@ -521,205 +419,101 @@ class UpdateStoreConfig(AssistantTool):
 
 
 @register_tool
-class SelectBlocks(AssistantTool):
-    name = "select_blocks"
-    description = "Select functional blocks for this hub. This determines which modules and roles are available."
+class InstallModules(AssistantTool):
+    name = "install_modules"
+    description = (
+        "Install modules from the Cloud marketplace in bulk. "
+        "Takes a list of module slugs (from get_module_catalog) and downloads+installs "
+        "them all at once, then schedules a server restart. "
+        "Use this when the user asks to install modules for their business. "
+        "Always call get_module_catalog first to get valid module_id slugs. "
+        "Install all needed modules in a SINGLE call to avoid multiple restarts."
+    )
+    module_id = None
     requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
     parameters = {
         "type": "object",
         "properties": {
-            "block_slugs": {
+            "module_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of block slugs to select (e.g., ['pos_retail', 'inventory', 'crm'])",
+                "description": "List of module_id slugs to install (e.g., ['customers', 'inventory', 'sales'])",
             },
         },
-        "required": ["block_slugs"],
+        "required": ["module_ids"],
         "additionalProperties": False,
     }
 
     def execute(self, args, request):
+        import requests as http_requests
+        from pathlib import Path
+        from django.conf import settings
+        from django.core.cache import cache
+
+        module_ids = args.get('module_ids', [])
+        if not module_ids:
+            return {"error": "module_ids list is required"}
+
+        modules_dir = Path(settings.MODULES_DIR)
+        installed_ids = set()
+        if modules_dir.exists():
+            for d in modules_dir.iterdir():
+                if d.is_dir() and not d.name.startswith('.'):
+                    installed_ids.add(d.name.lstrip('_'))
+
+        to_install = [mid for mid in module_ids if mid not in installed_ids]
+        already = [mid for mid in module_ids if mid in installed_ids]
+
+        if not to_install:
+            return {
+                "message": "All requested modules are already installed",
+                "already_installed": already,
+            }
+
+        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com')
         from apps.configuration.models import HubConfig
-        config = HubConfig.get_solo()
-        block_slugs = args.get('block_slugs', [])
+        hub_config = HubConfig.get_solo()
+        auth_token = hub_config.hub_jwt or hub_config.cloud_api_token
 
-        config.selected_blocks = block_slugs
-        if block_slugs:
-            config.solution_slug = block_slugs[0]
-        config.save()
+        modules_to_install = []
+        for mid in to_install:
+            modules_to_install.append({
+                'slug': mid,
+                'name': mid,
+                'download_url': f"{base_url}/api/marketplace/modules/{mid}/download/",
+            })
 
-        return {
-            "success": True,
-            "selected_blocks": block_slugs,
-            "count": len(block_slugs),
-        }
+        try:
+            from apps.core.services.module_install_service import ModuleInstallService
 
-
-@register_tool
-class EnableModule(AssistantTool):
-    name = "enable_module"
-    description = "Enable a module that is currently disabled (removes the _ prefix from its directory name)"
-    requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "module_id": {"type": "string", "description": "Module ID to enable"},
-        },
-        "required": ["module_id"],
-        "additionalProperties": False,
-    }
-
-    def execute(self, args, request):
-        import os
-        from django.conf import settings as django_settings
-        module_id = args['module_id']
-        modules_dir = django_settings.MODULES_DIR
-
-        disabled_path = os.path.join(modules_dir, f"_{module_id}")
-        enabled_path = os.path.join(modules_dir, module_id)
-
-        if os.path.exists(enabled_path):
-            return {"success": True, "message": f"Module {module_id} is already enabled"}
-
-        if os.path.exists(disabled_path):
-            os.rename(disabled_path, enabled_path)
-            return {"success": True, "message": f"Module {module_id} enabled. Restart required."}
-
-        return {"success": False, "error": f"Module {module_id} not found"}
-
-
-@register_tool
-class DisableModule(AssistantTool):
-    name = "disable_module"
-    description = "Disable a module (adds _ prefix to its directory name)"
-    requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "module_id": {"type": "string", "description": "Module ID to disable"},
-        },
-        "required": ["module_id"],
-        "additionalProperties": False,
-    }
-
-    def execute(self, args, request):
-        import os
-        from django.conf import settings as django_settings
-        module_id = args['module_id']
-        modules_dir = django_settings.MODULES_DIR
-
-        if module_id == 'assistant':
-            return {"success": False, "error": "Cannot disable the assistant module"}
-
-        enabled_path = os.path.join(modules_dir, module_id)
-        disabled_path = os.path.join(modules_dir, f"_{module_id}")
-
-        if os.path.exists(disabled_path):
-            return {"success": True, "message": f"Module {module_id} is already disabled"}
-
-        if os.path.exists(enabled_path):
-            os.rename(enabled_path, disabled_path)
-            return {"success": True, "message": f"Module {module_id} disabled. Restart required."}
-
-        return {"success": False, "error": f"Module {module_id} not found"}
-
-
-@register_tool
-class CreateRole(AssistantTool):
-    name = "create_role"
-    description = "Create a custom role with specific permission wildcards"
-    requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Role name (e.g., 'cashier')"},
-            "display_name": {"type": "string", "description": "Display name (e.g., 'Cashier')"},
-            "description": {"type": "string", "description": "Role description"},
-            "wildcards": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Permission wildcards (e.g., ['sales.*', 'inventory.view_*'])",
-            },
-        },
-        "required": ["name", "display_name", "description", "wildcards"],
-        "additionalProperties": False,
-    }
-
-    def execute(self, args, request):
-        from apps.accounts.models import Role, RolePermission
-        hub_id = request.session.get('hub_id')
-
-        role = Role.objects.create(
-            hub_id=hub_id,
-            name=args['name'],
-            display_name=args['display_name'],
-            description=args.get('description', ''),
-            source='custom',
-            is_system=False,
-        )
-
-        for wildcard in args.get('wildcards', []):
-            RolePermission.objects.create(
-                hub_id=hub_id,
-                role=role,
-                wildcard=wildcard,
+            result = ModuleInstallService.bulk_download_and_install(
+                modules_to_install, auth_token,
             )
 
-        return {
-            "success": True,
-            "role_id": str(role.id),
-            "name": role.name,
-            "wildcards": args.get('wildcards', []),
-        }
+            if result.installed > 0:
+                cache.delete('marketplace:modules_list')
+                cache.delete('marketplace:installed_modules')
 
+                ModuleInstallService.run_post_install(
+                    load_all=True, run_migrations=True, schedule_restart=True,
+                )
 
-@register_tool
-class CreateEmployee(AssistantTool):
-    name = "create_employee"
-    description = "Create a new local employee with name, email, role, and PIN"
-    requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Employee full name"},
-            "email": {"type": "string", "description": "Employee email"},
-            "pin": {"type": "string", "description": "4-digit PIN code"},
-            "role_name": {"type": "string", "description": "Role name to assign (e.g., 'admin', 'manager', 'employee')"},
-        },
-        "required": ["name", "email", "pin", "role_name"],
-        "additionalProperties": False,
-    }
+                try:
+                    from apps.marketplace.views import _create_roles_for_installed_modules
+                    _create_roles_for_installed_modules(to_install)
+                except Exception:
+                    pass
 
-    def execute(self, args, request):
-        from apps.accounts.models import LocalUser, Role
-        hub_id = request.session.get('hub_id')
-
-        # Find role
-        role_obj = Role.objects.filter(
-            hub_id=hub_id, name=args['role_name'], is_deleted=False
-        ).first()
-
-        user = LocalUser(
-            hub_id=hub_id,
-            name=args['name'],
-            email=args['email'],
-            role=args.get('role_name', 'employee'),
-            role_obj=role_obj,
-        )
-        user.set_pin(args['pin'])
-        user.save()
-
-        return {
-            "success": True,
-            "employee_id": str(user.id),
-            "name": user.name,
-            "role": user.get_role_name(),
-        }
+            return {
+                "message": f"Installed {result.installed} modules. Server restart scheduled.",
+                "installed_count": result.installed,
+                "already_installed": already,
+                "errors": result.errors if result.errors else [],
+                "requires_restart": result.installed > 0,
+            }
+        except Exception as e:
+            logger.error(f"[ASSISTANT] Module install error: {e}", exc_info=True)
+            return {"error": f"Failed to install modules: {str(e)}"}
 
 
 @register_tool
@@ -764,7 +558,6 @@ class LoadModuleTools(AssistantTool):
             if mid not in active:
                 not_found.append(mid)
                 continue
-            # Collect tool names from this module
             for tool in TOOL_REGISTRY.values():
                 if tool.module_id == mid:
                     loaded_names.append(tool.name)
@@ -774,43 +567,4 @@ class LoadModuleTools(AssistantTool):
             "loaded_count": len(loaded_names),
             "not_found": not_found,
             "message": f"Loaded {len(loaded_names)} tools from {len(requested) - len(not_found)} modules. These tools are now available for use.",
-        }
-
-
-@register_tool
-class CreateTaxClass(AssistantTool):
-    name = "create_tax_class"
-    description = "Create a new tax class/rate (e.g., 'IVA General 21%', 'IGIC 7%')"
-    requires_confirmation = True
-    required_permission = "assistant.use_setup_mode"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Tax class name (e.g., 'IVA General 21%')"},
-            "rate": {"type": "number", "description": "Tax rate as percentage (e.g., 21.0)"},
-            "description": {"type": "string", "description": "Optional description"},
-            "is_default": {"type": "boolean", "description": "Whether this is the default tax class"},
-        },
-        "required": ["name", "rate", "description", "is_default"],
-        "additionalProperties": False,
-    }
-
-    def execute(self, args, request):
-        from apps.configuration.models import TaxClass
-
-        if args.get('is_default'):
-            TaxClass.objects.filter(is_default=True).update(is_default=False)
-
-        tc = TaxClass.objects.create(
-            name=args['name'],
-            rate=args['rate'],
-            description=args.get('description', ''),
-            is_default=args.get('is_default', False),
-        )
-
-        return {
-            "success": True,
-            "tax_class_id": tc.id,
-            "name": tc.name,
-            "rate": str(tc.rate),
         }

@@ -111,6 +111,7 @@ def discover_tools():
         'assistant.tools.setup_tools',
         'assistant.tools.configure_tools',
         'assistant.tools.analytics_tools',
+        'assistant.tools.blueprint_tools',
     ]
     for mod_name in core_modules:
         try:
