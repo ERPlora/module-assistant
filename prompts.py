@@ -226,8 +226,26 @@ def _modules_context(module_entries):
     return f"## Active Modules ({len(module_entries)})\n{', '.join(ids)}"
 
 
+def _load_module_context(module_id: str) -> str:
+    """
+    Load ai_context.py from a module and return its CONTEXT string.
+    Returns empty string if the module has no ai_context.py or CONTEXT variable.
+    Fast: no network call, pure file import.
+    """
+    try:
+        import importlib
+        mod = importlib.import_module(f'{module_id}.ai_context')
+        ctx = getattr(mod, 'CONTEXT', '')
+        return ctx.strip() if ctx else ''
+    except ImportError:
+        return ''
+    except Exception as e:
+        logger.debug(f"[ASSISTANT] Error loading ai_context for {module_id}: {e}")
+        return ''
+
+
 def _tools_context(context, request):
-    """Summarize available core tools. Module tools are loaded on demand."""
+    """Summarize available core tools and inject context for loaded modules."""
     try:
         from assistant.tools import get_tools_for_context, TOOL_REGISTRY
         from apps.accounts.models import LocalUser
@@ -240,8 +258,11 @@ def _tools_context(context, request):
             except LocalUser.DoesNotExist:
                 pass
 
-        # Only show core tools (loaded_modules=empty set)
-        tools = get_tools_for_context(context, user, loaded_modules=set())
+        # Get currently loaded modules from session
+        loaded_modules = set(request.session.get('assistant_loaded_modules', []))
+
+        # Only show core tools + loaded module tools
+        tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
         if not tools:
             return ''
 
@@ -270,6 +291,16 @@ def _tools_context(context, request):
         if module_names:
             lines.append('Loaded module tools: ' + ', '.join(module_names))
         lines.append("Use `load_module_tools([id])` to load module tools. `unload_module_tools` to free context.")
+
+        # Inject ai_context.py knowledge for each loaded module
+        module_contexts = []
+        for mid in sorted(loaded_modules):
+            ctx = _load_module_context(mid)
+            if ctx:
+                module_contexts.append(ctx)
+        if module_contexts:
+            lines.append('\n' + '\n\n'.join(module_contexts))
+
         return '\n'.join(lines)
     except Exception as e:
         logger.debug(f"[ASSISTANT] Error building tools context: {e}")
