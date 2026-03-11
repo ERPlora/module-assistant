@@ -99,7 +99,7 @@ class ExecutePlan(AssistantTool):
                 })
             except Exception as e:
                 logger.error(f"[ASSISTANT] Plan step {i+1} ({action}) failed: {e}", exc_info=True)
-                error_msg = str(e)
+                error_msg = self._friendly_error(e)
                 results.append({
                     'step': i + 1,
                     'action': action,
@@ -152,6 +152,27 @@ class ExecutePlan(AssistantTool):
         if handler is None:
             raise ValueError(f"Unknown action: {action}")
         return handler(params)
+
+    # ── Error helpers ──────────────────────────────────────────────
+
+    def _friendly_error(self, exc):
+        """Convert raw DB/system errors to human-readable messages."""
+        msg = str(exc)
+        if 'unique constraint' in msg or 'duplicate key' in msg:
+            # Try to extract the field that caused the dupe
+            import re
+            field_match = re.search(r'Key \([\w,\s]+,\s*(\w+)\)=\(', msg)
+            if field_match:
+                field = field_match.group(1)
+                return f"Already exists (duplicate {field})"
+            return "Already exists (duplicate value)"
+        if 'does not exist' in msg and 'relation' in msg:
+            return "Database table not found — module may not be installed"
+        if 'ForeignKeyViolation' in type(exc).__name__ or 'ForeignKey' in msg:
+            return "Related record not found"
+        if 'NOT NULL' in msg or 'null value' in msg:
+            return "A required field is missing"
+        return msg
 
     # ── Hub Configuration ──────────────────────────────────────────
 
