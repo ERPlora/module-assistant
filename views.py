@@ -322,6 +322,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
         # Execute function calls
         tool_results = []
         has_pending = False
+        pending_llm_message_id = ''  # shared id for all pending actions from this LLM message
 
         for fc in function_calls:
             tool_name = fc.get('name', '')
@@ -395,6 +396,10 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
 
                 # Confirmation check
                 if tool.requires_confirmation:
+                    # Use the first tool_call's id as the shared llm_message_id
+                    # for all pending actions from this same LLM message.
+                    if not pending_llm_message_id:
+                        pending_llm_message_id = function_calls[0].get('call_id', '') or uuid_mod.uuid4().hex
                     # Store call_id so we can resume the loop after confirmation
                     args_with_call_id = {**tool_args, '_call_id': call_id}
                     action_log = AssistantActionLog.objects.create(
@@ -405,6 +410,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         result={},
                         success=False,
                         confirmed=False,
+                        llm_message_id=pending_llm_message_id,
                     )
                     pending_actions.append({
                         'log_id': str(action_log.id),
@@ -805,29 +811,64 @@ def confirm_action(request, log_id):
     result = execute_confirmed_action(action_log, request)
 
     if result['success']:
-        # Resume agentic loop: send tool result back to the LLM
-        # so it can continue with the next setup steps
         conversation = action_log.conversation
         context = conversation.context or 'general'
 
         from apps.accounts.models import LocalUser
         user = LocalUser.objects.get(id=user_id)
 
-        # Build function_call_output using the stored call_id
-        call_id = action_log.tool_args.get('_call_id', '')
-        if call_id:
-            resume_input = [{
-                'type': 'function_call_output',
-                'call_id': call_id,
-                'output': _json_dumps(result.get('result', {})),
-            }]
+        # Check if this action belongs to a group (same llm_message_id).
+        # If sibling actions are still unconfirmed, don't resume the loop yet.
+        llm_message_id = action_log.llm_message_id
+        if llm_message_id:
+            sibling_pending = AssistantActionLog.objects.filter(
+                llm_message_id=llm_message_id,
+                confirmed=False,
+            ).exclude(id=action_log.id)
+            if sibling_pending.exists():
+                # More confirmations needed — tell the user and wait
+                remaining = sibling_pending.count()
+                noun = 'action' if remaining == 1 else 'actions'
+                return HttpResponse(render_to_string('assistant/partials/message.html', {
+                    'role': 'system',
+                    'content': f'Action confirmed. Please confirm the remaining {remaining} {noun} above to continue.',
+                }, request=request))
+
+            # All siblings confirmed — collect all their results in order
+            all_logs = AssistantActionLog.objects.filter(
+                llm_message_id=llm_message_id,
+            ).order_by('created_at')
+            resume_input = []
+            for log in all_logs:
+                cid = log.tool_args.get('_call_id', '')
+                if cid:
+                    resume_input.append({
+                        'type': 'function_call_output',
+                        'call_id': cid,
+                        'output': _json_dumps(log.result),
+                    })
+            if not resume_input:
+                # Fallback: use just the current action's result
+                resume_input = None
         else:
-            # Fallback: no call_id stored (old action logs)
-            resume_input = (
-                f"[Tool '{action_log.tool_name}' executed successfully. "
-                f"Result: {_json_dumps(result.get('result', {}))}] "
-                f"Continue with the next steps."
-            )
+            resume_input = None
+
+        # Build resume_input for single (ungrouped) actions
+        if resume_input is None:
+            call_id = action_log.tool_args.get('_call_id', '')
+            if call_id:
+                resume_input = [{
+                    'type': 'function_call_output',
+                    'call_id': call_id,
+                    'output': _json_dumps(result.get('result', {})),
+                }]
+            else:
+                # Fallback: no call_id stored (old action logs)
+                resume_input = (
+                    f"[Tool '{action_log.tool_name}' executed successfully. "
+                    f"Result: {_json_dumps(result.get('result', {}))}] "
+                    f"Continue with the next steps."
+                )
 
         request_id = uuid_mod.uuid4().hex[:16]
         session_data = dict(request.session)
@@ -881,9 +922,81 @@ def cancel_action(request, log_id):
             user_id=user_id,
             confirmed=False,
         )
-        action_log.delete()
     except AssistantActionLog.DoesNotExist:
-        pass
+        return HttpResponse(render_to_string('assistant/partials/message.html', {
+            'role': 'system',
+            'content': 'Action cancelled.',
+        }, request=request))
+
+    llm_message_id = action_log.llm_message_id
+
+    if llm_message_id:
+        # Cancel the whole group: collect all sibling logs (confirmed or not),
+        # then resume the loop with cancellation results for all of them so
+        # the LLM doesn't receive an incomplete tool-call sequence.
+        all_logs = list(AssistantActionLog.objects.filter(
+            llm_message_id=llm_message_id,
+        ).order_by('created_at'))
+
+        conversation = action_log.conversation
+        context = (conversation.context or 'general') if conversation else 'general'
+
+        from apps.accounts.models import LocalUser
+        try:
+            user = LocalUser.objects.get(id=user_id)
+        except LocalUser.DoesNotExist:
+            for log in all_logs:
+                log.delete()
+            return HttpResponse(render_to_string('assistant/partials/message.html', {
+                'role': 'system',
+                'content': 'Action cancelled.',
+            }, request=request))
+
+        # Build cancellation results for every log in the group
+        resume_input = []
+        for log in all_logs:
+            cid = log.tool_args.get('_call_id', '')
+            if cid:
+                resume_input.append({
+                    'type': 'function_call_output',
+                    'call_id': cid,
+                    'output': _json_dumps({'error': 'Action cancelled by user.'}),
+                })
+            log.delete()
+
+        if resume_input and conversation:
+            request_id = uuid_mod.uuid4().hex[:16]
+            session_data = dict(request.session)
+
+            def _resume_loop():
+                from django.test import RequestFactory
+                fake_request = RequestFactory().get('/')
+                fake_request.session = session_data
+                try:
+                    loop_result = run_agentic_loop(
+                        user, conversation, resume_input, context, fake_request,
+                        request_id=request_id,
+                    )
+                    cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'complete', '')
+                except AgenticLoopError as e:
+                    cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', str(e))
+                except Exception as e:
+                    logger.error(f"[ASSISTANT] Cancel resume loop error: {e}", exc_info=True)
+                    cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', 'Something went wrong.')
+
+            thread = threading.Thread(target=_resume_loop, daemon=True)
+            thread.start()
+
+            html = render_to_string('assistant/partials/progress.html', {
+                'request_id': request_id,
+                'message': 'Notifying assistant of cancellation...',
+            }, request=request)
+            return HttpResponse(html)
+    else:
+        action_log.delete()
 
     return HttpResponse(render_to_string('assistant/partials/message.html', {
         'role': 'system',

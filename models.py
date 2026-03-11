@@ -45,6 +45,7 @@ class AssistantActionLog(HubBaseModel):
     success = models.BooleanField(default=False)
     confirmed = models.BooleanField(default=False)
     error_message = models.TextField(blank=True, default='')
+    llm_message_id = models.CharField(max_length=100, blank=True, default='')
 
     class Meta(HubBaseModel.Meta):
         db_table = 'assistant_assistantactionlog'
