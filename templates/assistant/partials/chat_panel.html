@@ -8,12 +8,6 @@
             <span id="tier-usage" class="hidden"></span>
         </div>
         <div class="flex items-center gap-1">
-            {% if is_setup_mode %}
-            <a href="{% url 'setup:index' %}" class="btn btn-ghost btn-sm text-xs" title="{% trans 'Manual setup wizard' %}">
-                {% icon "settings-outline" %}
-                <span class="hidden sm:inline ml-1">{% trans "Manual Setup" %}</span>
-            </a>
-            {% endif %}
             <button type="button"
                     id="chat-new"
                     class="btn btn-ghost btn-sm"
