@@ -62,6 +62,7 @@ def build_system_prompt(request, context='general'):
         _base_instructions(hub_config.language),
         _user_context(user_name, user_role),
         _store_context(store_config, hub_config),
+        _business_context(hub_config),
         _datetime_context(hub_config),
         _modules_context(module_entries),
         _tools_context(context, request),
@@ -116,6 +117,69 @@ def _store_context(store_config, hub_config):
         parts[0] += f"\n- VAT/Tax ID: {store_config.vat_number}"
 
     return parts[0]
+
+
+def _business_context(hub_config):
+    """
+    Inject business type, sector, and UFO functional units from Blueprint API.
+    Data is fetched dynamically (cached 5min in Redis) so it reflects
+    any JSON changes in the blueprints repo without code changes.
+    """
+    type_codes = getattr(hub_config, 'selected_business_types', None) or []
+    if not type_codes:
+        return ''
+
+    try:
+        from apps.core.services.blueprint_service import BlueprintService
+
+        language = hub_config.language or 'en'
+        lines = ['## Business Context']
+        lines.append(f"- Business types: {', '.join(type_codes)}")
+
+        # Fetch detail for each type (cached, fast)
+        sector = None
+        ufo_essential = []
+        ufo_recommended = []
+        key_modules = []
+
+        for code in type_codes:
+            detail = BlueprintService.get_type_detail(code, language=language)
+            if not detail:
+                continue
+
+            # Sector (use first type's sector)
+            if not sector and detail.get('sector'):
+                sector = detail['sector']
+
+            # UFO matrix — collect essential/recommended units
+            ufo = detail.get('ufo', {})
+            for unit_code, level in ufo.items():
+                if level == 'essential' and unit_code not in ufo_essential:
+                    ufo_essential.append(unit_code)
+                elif level == 'recommended' and unit_code not in ufo_recommended:
+                    ufo_recommended.append(unit_code)
+
+            # Key modules for this type
+            for mod in detail.get('modules', []):
+                mid = mod if isinstance(mod, str) else mod.get('id', '')
+                if mid and mid not in key_modules:
+                    key_modules.append(mid)
+
+        if sector:
+            lines.append(f"- Sector: {sector}")
+        if ufo_essential:
+            lines.append(f"- Essential functional units: {', '.join(ufo_essential)}")
+        if ufo_recommended:
+            lines.append(f"- Recommended functional units: {', '.join(ufo_recommended)}")
+        if key_modules:
+            lines.append(f"- Key modules for this business: {', '.join(key_modules[:20])}")
+
+        return '\n'.join(lines)
+
+    except Exception as e:
+        logger.debug(f"[ASSISTANT] Error building business context: {e}")
+        # Fallback: at least show the type codes without API call
+        return f"## Business Context\n- Business types: {', '.join(type_codes)}"
 
 
 def _datetime_context(hub_config):
