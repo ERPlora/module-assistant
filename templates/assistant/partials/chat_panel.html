@@ -54,6 +54,7 @@
             <input type="hidden" name="conversation_id" id="conv-id" value="{{ last_conversation.id|default:'' }}">
             <input type="hidden" name="context" value="{{ chat_context|default:'general' }}">
 
+            {% if can_attach %}
             <!-- File preview -->
             <div id="file-preview" class="hidden mb-2 p-2 rounded-lg bg-base-200 flex items-center gap-2">
                 <img id="file-preview-img" class="hidden h-12 w-12 object-cover rounded" src="" alt="">
@@ -61,8 +62,8 @@
                 <span id="file-preview-name" class="text-sm flex-1 truncate"></span>
                 <button type="button" id="chat-file-remove" class="btn btn-ghost btn-sm" title="{% trans 'Remove' %}">&times;</button>
             </div>
-
             <input type="file" id="chat-file" name="file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden>
+            {% endif %}
 
             <div class="flex gap-2 items-end">
                 <textarea
@@ -72,12 +73,14 @@
                     rows="1"
                     placeholder="{% trans 'Type a message...' %}"
                     style="resize: none; max-height: 120px;"></textarea>
+                {% if can_attach %}
                 <button type="button"
                         id="chat-attach"
                         class="btn btn-ghost"
                         title="{% trans 'Attach file' %}">
                     {% icon "attach-outline" %}
                 </button>
+                {% endif %}
                 <button type="button"
                         id="chat-mic"
                         class="btn btn-ghost"

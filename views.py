@@ -140,6 +140,24 @@ def _json_dumps(obj):
 @permission_required('assistant.use_chat')
 @with_module_nav('assistant', 'chat')
 @htmx_view('assistant/pages/chat.html', 'assistant/partials/chat_panel.html')
+def _get_tier_features(hub_jwt):
+    """Fetch assistant tier features from Cloud. Returns feature list or empty list on error."""
+    try:
+        import requests as http_requests
+        from django.conf import settings
+        base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+        resp = http_requests.get(
+            f"{base_url}/api/hubs/me/assistant/config/",
+            headers={'Authorization': f'Bearer {hub_jwt}'},
+            timeout=3,
+        )
+        if resp.status_code == 200:
+            return resp.json().get('features', [])
+    except Exception:
+        pass
+    return []
+
+
 def chat_page(request):
     """Main chat page."""
     conversations = AssistantConversation.objects.filter(
@@ -153,11 +171,16 @@ def chat_page(request):
     hub_config = HubConfig.get_config()
     context = 'setup' if (request.GET.get('context') == 'setup' or not hub_config.is_configured) else 'general'
 
+    # Get tier features to show/hide UI elements
+    tier_features = _get_tier_features(hub_config.hub_jwt)
+    can_attach = 'files' in tier_features or 'images' in tier_features
+
     return {
         'conversations': conversations,
         'last_conversation': last_conversation,
         'chat_context': context,
         'is_setup_mode': context == 'setup',
+        'can_attach': can_attach,
     }
 
 
