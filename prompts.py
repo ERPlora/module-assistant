@@ -594,9 +594,9 @@ Do this as your FIRST action, before responding with the plan.
 
 **Step 2: Identify business type and install blueprint.**
 MANDATORY SEQUENCE — follow this EXACTLY:
-1. Call `list_business_types` tool to get the list of valid type codes (e.g., "restaurant", "bar", "cafeteria").
-   Do NOT skip this step — you MUST have the actual codes from the API before proceeding.
-2. Match the user's business description to the returned type codes (e.g., restaurant → "restaurant").
+1. Call the `list_business_types` TOOL DIRECTLY (NOT as an execute_plan step) to get valid type codes.
+   This is a standalone tool call, not an execute_plan action.
+2. Match the user's business description to the returned type codes (e.g., "restaurant", "bar", "cafeteria").
 3. Use ExecutePlan with `install_blueprint` action ALONE (not combined with other steps):
    - params: {{"type_codes": ["restaurant", "bar", "cafeteria"], "sector": "hospitality"}}
    - type_codes MUST be the exact "code" values returned by list_business_types — not guessed names.
