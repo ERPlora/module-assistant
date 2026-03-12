@@ -136,10 +136,6 @@ def _json_dumps(obj):
 # PAGE VIEWS
 # ============================================================================
 
-@login_required
-@permission_required('assistant.use_chat')
-@with_module_nav('assistant', 'chat')
-@htmx_view('assistant/pages/chat.html', 'assistant/partials/chat_panel.html')
 def _get_tier_features(hub_jwt):
     """Fetch assistant tier features from Cloud. Returns feature list or empty list on error."""
     try:
@@ -158,6 +154,10 @@ def _get_tier_features(hub_jwt):
     return []
 
 
+@login_required
+@permission_required('assistant.use_chat')
+@with_module_nav('assistant', 'chat')
+@htmx_view('assistant/pages/chat.html', 'assistant/partials/chat_panel.html')
 def chat_page(request):
     """Main chat page."""
     conversations = AssistantConversation.objects.filter(
