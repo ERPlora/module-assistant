@@ -85,6 +85,8 @@ class ExecutePlan(AssistantTool):
             {"action": "set_regional_config", "params": {"language": "es", "timezone": "Europe/Madrid", "country_code": "ES", "currency": "EUR"}},
             {"action": "set_business_info", "params": {"business_name": "Salón María", "business_address": "C/ Gran Vía 10, Madrid"}},
             {"action": "set_tax_config", "params": {"tax_rate": 21.0, "tax_included": True}},
+            {"action": "create_tax_class", "params": {"name": "IVA General", "rate": 21.0, "is_default": True}},
+            {"action": "create_tax_class", "params": {"name": "IVA Reducido", "rate": 10.0, "is_default": False}},
             {"action": "create_category", "params": {"name": "Bebidas"}},
             {"action": "create_product", "params": {"name": "Agua mineral", "price": 2.00, "stock": 50, "categories": ["Bebidas"]}},
             {"action": "create_service_category", "params": {"name": "Cortes"}},
