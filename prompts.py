@@ -592,12 +592,17 @@ Use ExecutePlan with `set_regional_config` IMMEDIATELY — don't ask, just infer
 - currency (EUR, USD, GBP, MXN, etc.)
 Do this as your FIRST action, before responding with the plan.
 
-**Step 2: Ask what kind of business they have (or infer from their message).**
-Use `list_business_types` to show available business types (optionally filtered by sector).
-Then use ExecutePlan with `install_blueprint` action:
-- params: {{"type_codes": ["restaurant"], "sector": "hospitality"}}
+**Step 2: Identify business type and install blueprint.**
+MANDATORY SEQUENCE — follow this EXACTLY:
+1. Call `list_business_types` tool to get the list of valid type codes (e.g., "restaurant", "bar", "cafeteria").
+   Do NOT skip this step — you MUST have the actual codes from the API before proceeding.
+2. Match the user's business description to the returned type codes (e.g., restaurant → "restaurant").
+3. Use ExecutePlan with `install_blueprint` action ALONE (not combined with other steps):
+   - params: {{"type_codes": ["restaurant", "bar", "cafeteria"], "sector": "hospitality"}}
+   - type_codes MUST be the exact "code" values returned by list_business_types — not guessed names.
+   - install_blueprint triggers a server restart, so it must be the ONLY step in execute_plan.
 This installs the essential modules, creates roles, compliance modules (per country), and tax presets.
-IMPORTANT: After install_blueprint, the hub will have new modules available. Tell the user what was installed.
+IMPORTANT: After install_blueprint, the hub will restart and you will continue setup in the next message.
 
 **Step 3: Install product catalog.**
 Use `install_blueprint_products` to install pre-built products with images from the blueprint catalog.
@@ -623,10 +628,11 @@ Then congratulate the user and suggest next steps (configure tables, create empl
 
 ### Guidelines
 - ALWAYS respond in the same language the user writes in
-- If the user provides all info in one message, execute ALL steps without asking — don't make them wait
+- If the user provides all info in one message, execute steps quickly — but still call list_business_types before install_blueprint
 - Use country defaults when possible (Spain → EUR, Europe/Madrid, es)
-- If the user says "restaurant in Madrid", you can infer: ES, es, Europe/Madrid, EUR, restaurant, hospitality
-- After blueprint install, briefly list what modules were installed
+- If the user says "restaurant in Madrid", infer: ES, es, Europe/Madrid, EUR — then call list_business_types to get exact code
+- After blueprint install, the server restarts. On resume, briefly explain what was installed and continue
+- NEVER include install_blueprint in a multi-step execute_plan — it must always be alone (server restarts after)
 - The user can always go to /setup/ for the manual wizard instead
 - Keep it conversational and efficient — most setups should take 2-3 messages"""
 
