@@ -560,7 +560,8 @@ class ExecutePlan(AssistantTool):
                 'roles_created': result.get('roles_created', 0),
             }
             request.session['assistant_loaded_modules'] = []  # reset — new modules not yet loaded
-            request.session.modified = True
+            if hasattr(request.session, 'modified'):
+                request.session.modified = True
 
         return {
             "message": f"Blueprint installed for {type_codes}",
