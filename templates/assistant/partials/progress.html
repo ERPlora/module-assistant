@@ -1,6 +1,6 @@
 <div id="assistant-progress"
      hx-get="{% url 'assistant:poll_progress' request_id %}"
-     hx-trigger="every 600ms"
+     hx-trigger="load delay:1200ms, every 600ms"
      hx-swap="outerHTML"
      class="chat-message chat-assistant">
     <div class="chat-bubble flex items-center gap-2">

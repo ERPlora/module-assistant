@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 10
 MAX_IDENTICAL_CALLS = 2  # max times same tool+args can repeat
-PROGRESS_CACHE_TIMEOUT = 120  # seconds
+PROGRESS_CACHE_TIMEOUT = 600  # seconds (10 min — blueprint installs can take 3-5 min)
 
 
 def _validate_tool_args(tool, tool_args):
