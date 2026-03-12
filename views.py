@@ -1201,6 +1201,9 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
             cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', 'Something went wrong.')
 
+    # Set initial progress before thread to avoid poll race condition
+    _set_progress(request_id, 'thinking', 'Continuing setup...')
+
     thread = threading.Thread(target=_resume_loop, daemon=True)
     thread.start()
 
