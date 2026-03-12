@@ -751,6 +751,10 @@ def chat(request):
             cache.set(f'assistant_result_{request_id}', {'error': friendly_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', friendly_msg)
 
+    # Set initial progress before starting thread to avoid race condition
+    # where first poll fires before the thread sets any progress entry
+    _set_progress(request_id, 'thinking', 'Analyzing your request...')
+
     # Start background thread
     thread = threading.Thread(target=_background_task, daemon=True)
     thread.start()
