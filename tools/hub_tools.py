@@ -492,6 +492,19 @@ class InstallModules(AssistantTool):
         try:
             from apps.core.services.module_install_service import ModuleInstallService
 
+            # Resolve transitive dependencies before installing
+            try:
+                dep_modules = ModuleInstallService._resolve_dependencies(
+                    set(to_install), installed_ids, base_url, auth_token,
+                )
+                if dep_modules:
+                    dep_names = [m['slug'] for m in dep_modules]
+                    logger.info("[ASSISTANT] Auto-resolved dependencies: %s", dep_names)
+                    modules_to_install.extend(dep_modules)
+                    to_install.extend(dep_names)
+            except Exception as e:
+                logger.warning("[ASSISTANT] Dependency resolution failed, continuing: %s", e)
+
             result = ModuleInstallService.bulk_download_and_install(
                 modules_to_install, auth_token,
             )
