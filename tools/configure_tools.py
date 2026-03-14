@@ -183,7 +183,7 @@ class ExecutePlan(AssistantTool):
             )
 
             try:
-                result = self._execute_step(action, params, request)
+                result = self._execute_step(action, params, request, description)
                 completed.append((step, result))
                 results.append({
                     'step': i + 1,
@@ -325,7 +325,7 @@ class ExecutePlan(AssistantTool):
             parts.append(f"Rollback attempted for {len(rolled_back)} step(s) (no rollback actions defined).")
         return ' '.join(parts)
 
-    def _execute_step(self, action, params, request):
+    def _execute_step(self, action, params, request, description=''):
         """Execute a single plan step."""
         dispatch = {
             'set_regional_config': self._set_regional_config,
@@ -345,9 +345,9 @@ class ExecutePlan(AssistantTool):
             'create_payment_method': self._create_payment_method,
             'set_business_hours': self._set_business_hours,
             'create_zone': self._create_zone,
-            'create_table': self._create_table,
+            'create_table': lambda p: self._create_table(p, description),
             'bulk_create_zones': self._bulk_create_zones,
-            'bulk_create_tables': self._bulk_create_tables,
+            'bulk_create_tables': lambda p: self._bulk_create_tables(p, description),
             'bulk_set_business_hours': self._set_business_hours,
             'install_blueprint': lambda p: self._install_blueprint(p, request),
             'install_blueprint_products': self._install_blueprint_products,
@@ -911,16 +911,64 @@ class ExecutePlan(AssistantTool):
         )
         return {"id": str(zone.id), "name": zone.name, "created": True}
 
-    def _create_table(self, params):
-        from tables.models import Table, Zone
+    def _resolve_zone(self, params, description=''):
+        """Resolve zone from params (various keys/formats) or step description.
+
+        Handles LLM inconsistencies:
+        - Key aliases: zone, zone_name, zone_id, area
+        - Value as zone name string → lookup by name
+        - Value as integer/UUID → lookup by pk
+        - Fallback: parse zone name from step description
+        """
+        from tables.models import Zone
+
+        # Try multiple param keys the LLM might use
+        zone_val = None
+        for key in ('zone', 'zone_name', 'zone_id', 'area'):
+            val = params.get(key)
+            if val is not None and val != '':
+                zone_val = val
+                break
+
+        if zone_val is None and description:
+            # Last resort: extract zone from description text
+            # Patterns like "in zone 'Terraza'", "zona Terraza", "for area Terraza"
+            import re
+            match = (
+                re.search(r"(?:zone|zona|area)\s+['\"]([^'\"]+)['\"]", description, re.IGNORECASE)
+                or re.search(r"(?:zone|zona|area)\s+(\S+)", description, re.IGNORECASE)
+            )
+            if match:
+                zone_val = match.group(1).strip()
+
+        if not zone_val:
+            return None
+
+        # If it looks like an integer ID, try pk lookup first
+        if isinstance(zone_val, int) or (isinstance(zone_val, str) and zone_val.isdigit()):
+            zone = Zone.objects.filter(pk=int(zone_val)).first()
+            if zone:
+                return zone
+
+        # Name-based lookup (case-insensitive)
+        if isinstance(zone_val, str):
+            zone = Zone.objects.filter(name__iexact=zone_val).first()
+            if zone:
+                return zone
+            # Partial match fallback (e.g. "Terraza" matches "Terraza exterior")
+            zone = Zone.objects.filter(name__icontains=zone_val).first()
+            if zone:
+                return zone
+
+        return None
+
+    def _create_table(self, params, description=''):
+        from tables.models import Table
         number = params.get('number') or params.get('name')
         if number is None:
             raise ValueError("Table number is required")
 
-        zone = None
-        zone_name = params.get('zone')
-        if zone_name:
-            zone = Zone.objects.filter(name__iexact=zone_name).first()
+        zone = self._resolve_zone(params, description)
 
         existing = Table.objects.filter(number=number).first()
         if existing:
@@ -948,12 +996,23 @@ class ExecutePlan(AssistantTool):
             results.append(self._create_zone(z))
         return {"created": len([r for r in results if r.get('created')]), "results": results}
 
-    def _bulk_create_tables(self, params):
+    def _bulk_create_tables(self, params, description=''):
         """Create multiple tables at once.
         Supports two formats:
         1. {tables: [{number, zone?, capacity?, shape?}]}
         2. {count: N, start_number?: 1, prefix?: '', zone?: 'name', capacity?: 4, shape?: 'square'}
+
+        Zone resolution: top-level zone is propagated to individual tables that
+        don't specify their own zone. Accepts zone, zone_name, zone_id, area.
         """
+        # Resolve top-level zone (from params or description) to propagate to tables
+        top_zone_name = None
+        for key in ('zone', 'zone_name', 'zone_id', 'area'):
+            val = params.get(key)
+            if val is not None and val != '':
+                top_zone_name = val
+                break
+
         tables_data = params.get('tables', [])
         if not tables_data:
             # Support count-based format
@@ -961,18 +1020,26 @@ class ExecutePlan(AssistantTool):
             if count > 0:
                 start = params.get('start_number', 1)
                 prefix = params.get('prefix', '')
-                zone = params.get('zone', '')
                 capacity = params.get('capacity', 4)
                 shape = params.get('shape', 'square')
                 tables_data = [
-                    {'number': f"{prefix}{start + i}", 'zone': zone, 'capacity': capacity, 'shape': shape}
+                    {'number': f"{prefix}{start + i}", 'capacity': capacity, 'shape': shape}
                     for i in range(count)
                 ]
+                # Zone will be propagated below
             else:
                 raise ValueError("No tables provided. Use {tables: [...]} or {count: N, zone: 'name'}")
+
+        # Propagate top-level zone to individual tables that don't have their own
+        if top_zone_name:
+            for t in tables_data:
+                has_zone = any(t.get(k) for k in ('zone', 'zone_name', 'zone_id', 'area'))
+                if not has_zone:
+                    t['zone'] = top_zone_name
+
         results = []
         for t in tables_data:
-            results.append(self._create_table(t))
+            results.append(self._create_table(t, description))
         return {"created": len([r for r in results if r.get('created')]), "results": results}
 
     # ── Kitchen Stations ───────────────────────────────────────────
