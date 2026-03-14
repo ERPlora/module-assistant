@@ -387,6 +387,17 @@ class ExecutePlan(AssistantTool):
             if value is not None:
                 setattr(config, field, value)
                 updated.append(field)
+        # Also accept business type(s) in regional config step
+        bt = params.get('selected_business_types') or params.get('business_types') or params.get('business_type')
+        if bt:
+            if isinstance(bt, str):
+                bt = [bt]
+            config.selected_business_types = bt
+            updated.append('selected_business_types')
+        sector = params.get('business_sector') or params.get('sector')
+        if sector:
+            config.business_sector = sector
+            updated.append('business_sector')
         if updated:
             config.save()
         return {"updated_fields": updated}
@@ -554,6 +565,20 @@ class ExecutePlan(AssistantTool):
         hub_config = HubConfig.get_solo()
         type_codes = params.get('type_codes', [])
         sector = params.get('sector', '')
+
+        # Accept alternative param names the LLM might use
+        if not type_codes:
+            type_codes = params.get('business_type', [])
+            if isinstance(type_codes, str):
+                type_codes = [type_codes]
+        if not type_codes:
+            type_codes = params.get('types', [])
+            if isinstance(type_codes, str):
+                type_codes = [type_codes]
+
+        # Fallback: use hub's already-configured business types
+        if not type_codes:
+            type_codes = getattr(hub_config, 'selected_business_types', []) or []
 
         if not type_codes:
             raise ValueError("type_codes is required (list of business type codes)")

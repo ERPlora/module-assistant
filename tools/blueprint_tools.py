@@ -210,10 +210,24 @@ class InstallBlueprint(AssistantTool):
         type_codes = args.get('type_codes', [])
         sector = args.get('sector', '')
 
+        # Accept alternative param names the LLM might use
         if not type_codes:
-            return {"error": "type_codes is required (list of business type codes)"}
+            type_codes = args.get('business_type', [])
+            if isinstance(type_codes, str):
+                type_codes = [type_codes]
+        if not type_codes:
+            type_codes = args.get('types', [])
+            if isinstance(type_codes, str):
+                type_codes = [type_codes]
 
         hub_config = HubConfig.get_solo()
+
+        # Fallback: use hub's already-configured business types
+        if not type_codes:
+            type_codes = getattr(hub_config, 'selected_business_types', []) or []
+
+        if not type_codes:
+            return {"error": "type_codes is required (list of business type codes)"}
         hub_config.selected_business_types = type_codes
         if sector:
             hub_config.business_sector = sector
