@@ -467,6 +467,11 @@ class InstallModules(AssistantTool):
                 if d.is_dir() and not d.name.startswith('.'):
                     installed_ids.add(d.name.lstrip('_'))
 
+        # Always ensure the assistant module is included — it's required
+        # for the AI to continue operating after restart.
+        if 'assistant' not in module_ids and 'assistant' not in installed_ids:
+            module_ids = list(module_ids) + ['assistant']
+
         to_install = [mid for mid in module_ids if mid not in installed_ids]
         already = [mid for mid in module_ids if mid in installed_ids]
 
