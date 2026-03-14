@@ -366,6 +366,10 @@ class ExecutePlan(AssistantTool):
         }
         action = aliases.get(action, action)
 
+        # Unwrap nested params — LLM sometimes wraps as {"parameters": {...actual...}}
+        if list(params.keys()) == ['parameters'] and isinstance(params.get('parameters'), dict):
+            params = params['parameters']
+
         handler = dispatch.get(action)
         if handler is None:
             raise ValueError(f"Unknown action: {action}")
