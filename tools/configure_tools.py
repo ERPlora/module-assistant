@@ -369,6 +369,7 @@ class ExecutePlan(AssistantTool):
         handler = dispatch.get(action)
         if handler is None:
             raise ValueError(f"Unknown action: {action}")
+        logger.info("[ASSISTANT] Executing action=%s params=%s", action, params)
         return handler(params)
 
     # ── Error helpers ──────────────────────────────────────────────
@@ -512,9 +513,15 @@ class ExecutePlan(AssistantTool):
             last = params.get('last_name', '')
             name = f"{first} {last}".strip()
         if not name:
-            name = params.get('full_name', '')
+            name = params.get('full_name') or params.get('employee_name') or ''
         if not name:
-            raise ValueError("name is required for create_employee")
+            # Last resort: look for any string value that could be a name
+            for key in ('nombre', 'display_name', 'title'):
+                if params.get(key):
+                    name = params[key]
+                    break
+        if not name:
+            raise ValueError(f"name is required for create_employee (received params: {list(params.keys())})")
 
         # Check for existing employee by name to avoid duplicates
         existing = LocalUser.objects.filter(hub_id=hub_id, name=name).first()
