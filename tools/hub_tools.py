@@ -523,6 +523,22 @@ class InstallModules(AssistantTool):
                 except Exception:
                     pass
 
+                # Register installed modules with Cloud so ensure_modules
+                # can restore them after container restart
+                try:
+                    for mid in to_install:
+                        try:
+                            http_requests.post(
+                                f"{base_url}/api/marketplace/modules/{mid}/mark_installed/",
+                                headers={'X-Hub-Token': auth_token},
+                                json={'version': '1.0.0'},
+                                timeout=10,
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    logger.warning("[ASSISTANT] Failed to register modules with Cloud")
+
             return {
                 "message": f"Installed {result.installed} modules. Server restart scheduled.",
                 "installed_count": result.installed,
