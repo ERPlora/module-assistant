@@ -172,6 +172,78 @@ class SearchBlueprintCatalog(AssistantTool):
 
 
 @register_tool
+class InstallBlueprint(AssistantTool):
+    name = "install_blueprint"
+    description = (
+        "Install a full blueprint for the hub: downloads and installs modules, "
+        "creates solution roles, and schedules seed product import. "
+        "Use this to set up a hub for a specific business type (e.g., 'restaurant', "
+        "'beauty_salon', 'hotel'). After install, the hub will restart to load new modules."
+    )
+    short_description = "Install modules, roles, and products for a business type. Hub restarts after."
+    module_id = None
+    requires_confirmation = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "type_codes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Business type codes to install (e.g., ['beauty_salon'], ['restaurant']). "
+                    "Multiple types can be combined (e.g., ['restaurant', 'bar'])."
+                ),
+            },
+            "sector": {
+                "type": "string",
+                "description": "Optional business sector code (e.g., 'personal_services').",
+            },
+        },
+        "required": ["type_codes"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from apps.configuration.models import HubConfig
+        from apps.core.services.blueprint_service import BlueprintService
+
+        type_codes = args.get('type_codes', [])
+        sector = args.get('sector', '')
+
+        if not type_codes:
+            return {"error": "type_codes is required (list of business type codes)"}
+
+        hub_config = HubConfig.get_solo()
+        hub_config.selected_business_types = type_codes
+        if sector:
+            hub_config.business_sector = sector
+        hub_config.save(update_fields=['selected_business_types', 'business_sector'])
+
+        result = BlueprintService.install_blueprint(
+            hub_config, type_codes, include_recommended=True,
+        )
+
+        # Save post-install state to session so the AI can continue after restart.
+        if request is not None and result.get('modules_installed', 0) > 0:
+            installed_names = result.get('installed_module_ids', [])
+            request.session['assistant_post_install'] = {
+                'type_codes': type_codes,
+                'modules_installed': installed_names,
+                'roles_created': result.get('roles_created', 0),
+            }
+            request.session['assistant_loaded_modules'] = []
+            if hasattr(request.session, 'modified'):
+                request.session.modified = True
+
+        return {
+            "message": f"Blueprint installed for {type_codes}",
+            "modules_installed": result.get('modules_installed', 0),
+            "roles_created": result.get('roles_created', 0),
+            "result": result,
+        }
+
+
+@register_tool
 class InstallBlueprintProducts(AssistantTool):
     name = "install_blueprint_products"
     description = (
