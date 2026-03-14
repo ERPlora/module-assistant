@@ -832,6 +832,13 @@ def chat(request):
             # Store the completed result
             cache.set(f'assistant_result_{request_id}', result, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'complete', '')
+
+            # If install_modules flagged a restart, schedule it AFTER the
+            # result is stored so the frontend can retrieve it first.
+            if cache.get('assistant_restart_pending'):
+                cache.delete('assistant_restart_pending')
+                from apps.core.utils import schedule_server_restart
+                schedule_server_restart(delay=5)
         except AgenticLoopError as e:
             # AgenticLoopError has user-facing messages (already sanitized)
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)

@@ -514,8 +514,13 @@ class InstallModules(AssistantTool):
                 cache.delete('marketplace:installed_modules')
 
                 ModuleInstallService.run_post_install(
-                    load_all=True, run_migrations=True, schedule_restart=True,
+                    load_all=True, run_migrations=True, schedule_restart=False,
                 )
+
+                # Flag that a restart is needed AFTER the agentic loop
+                # finishes and sends the result to the frontend.
+                # The _background_task in views.py checks this flag.
+                cache.set('assistant_restart_pending', True, timeout=300)
 
                 try:
                     from apps.marketplace.views import _create_roles_for_installed_modules
