@@ -487,10 +487,16 @@ class ExecutePlan(AssistantTool):
             hub_id=hub_id, name=params.get('role_name', 'employee'), is_deleted=False,
         ).first()
 
+        import uuid as _uuid
+        email = params.get('email', '')
+        if not email:
+            # Generate unique placeholder to avoid unique constraint on (hub_id, email)
+            email = f"{_uuid.uuid4().hex[:8]}@placeholder.local"
+
         user = LocalUser(
             hub_id=hub_id,
             name=params['name'],
-            email=params.get('email', ''),
+            email=email,
             role=params.get('role_name', 'employee'),
             role_obj=role_obj,
         )
