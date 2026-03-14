@@ -166,6 +166,18 @@ def chat_page(request):
 
     last_conversation = conversations[0] if conversations else None
 
+    # Check if opening a specific conversation from history
+    requested_conversation_id = request.GET.get('conversation_id')
+    restore_conversation = None
+    if requested_conversation_id:
+        try:
+            restore_conversation = AssistantConversation.objects.get(
+                id=int(requested_conversation_id),
+                user_id=request.session.get('local_user_id'),
+            )
+        except (AssistantConversation.DoesNotExist, ValueError, TypeError):
+            pass
+
     # Detect setup context (redirected from StoreConfigCheckMiddleware)
     from apps.configuration.models import HubConfig
     hub_config = HubConfig.get_config()
@@ -177,10 +189,11 @@ def chat_page(request):
 
     return {
         'conversations': conversations,
-        'last_conversation': last_conversation,
+        'last_conversation': restore_conversation or last_conversation,
         'chat_context': context,
         'is_setup_mode': context == 'setup',
         'can_attach': can_attach,
+        'restore_conversation_id': restore_conversation.id if restore_conversation else None,
     }
 
 
@@ -189,14 +202,93 @@ def chat_page(request):
 @with_module_nav('assistant', 'history')
 @htmx_view('assistant/pages/history.html', 'assistant/partials/history_content.html')
 def history_page(request):
-    """Conversation history page."""
-    conversations = AssistantConversation.objects.filter(
+    """Conversation history page with infinite scroll."""
+    PAGE_SIZE = 20
+    offset = int(request.GET.get('offset', 0))
+
+    qs = AssistantConversation.objects.filter(
         user_id=request.session.get('local_user_id'),
-    ).order_by('-updated_at')[:50]
+    ).order_by('-updated_at')
+
+    conversations = list(qs[offset:offset + PAGE_SIZE + 1])
+    has_more = len(conversations) > PAGE_SIZE
+    conversations = conversations[:PAGE_SIZE]
+    next_offset = offset + PAGE_SIZE if has_more else None
+
+    # For HTMX infinite scroll requests, return only the list items
+    if request.headers.get('HX-Request') and offset > 0:
+        from django.shortcuts import render as django_render
+        return django_render(request, 'assistant/partials/history_items.html', {
+            'conversations': conversations,
+            'next_offset': next_offset,
+        })
 
     return {
         'conversations': conversations,
+        'next_offset': next_offset,
     }
+
+
+@login_required
+@permission_required('assistant.use_chat')
+def load_conversation_messages(request, conversation_id):
+    """
+    Fetch conversation messages from Cloud and return rendered HTML.
+
+    Called via HTMX when the user opens a conversation from history.
+    Returns the messages as rendered chat bubbles for #chat-messages.
+    """
+    import requests as http_requests
+    import markdown
+    from apps.configuration.models import HubConfig
+
+    config = HubConfig.get_solo()
+    if not config.hub_jwt:
+        return HttpResponse('')
+
+    from django.conf import settings as django_settings
+    base_url = getattr(django_settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+
+    try:
+        response = http_requests.get(
+            f"{base_url}/api/hubs/me/assistant/history/{conversation_id}/",
+            headers={
+                'Authorization': f'Bearer {config.hub_jwt}',
+                'Content-Type': 'application/json',
+            },
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            return HttpResponse('')
+
+        data = response.json()
+        messages = data.get('messages', [])
+
+    except Exception as e:
+        logger.warning(f"[ASSISTANT] Failed to load conversation {conversation_id}: {e}")
+        return HttpResponse('')
+
+    # Render each message as HTML
+    md = markdown.Markdown(extensions=['tables', 'fenced_code'])
+    html_parts = []
+    for msg in messages:
+        role = msg.get('role')
+        content = msg.get('content', '')
+        if role == 'assistant' and content:
+            rendered = md.convert(content)
+            md.reset()
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'assistant',
+                'content': rendered,
+            }))
+        elif role == 'user' and content:
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'user',
+                'content': content,
+            }))
+
+    return HttpResponse(''.join(html_parts))
 
 
 @login_required
@@ -856,6 +948,11 @@ def chat_stream(request):
     conversation_id_str = str(conversation.id)
 
     def _proxy_stream():
+        # Send an SSE comment immediately to flush the first byte to the client.
+        # This prevents CloudFront from timing out (30s origin_read_timeout)
+        # while waiting for the Cloud to connect to the LLM provider.
+        yield ': keepalive\n\n'
+
         try:
             with http_requests.post(
                 f"{base_url}/api/hubs/me/assistant/chat/stream/",

@@ -16,4 +16,7 @@ urlpatterns = [
     path('poll/<str:request_id>/', views.poll_progress, name='poll_progress'),
     path('confirm/<str:log_id>/', views.confirm_action, name='confirm_action'),
     path('cancel/<str:log_id>/', views.cancel_action, name='cancel_action'),
+
+    # History
+    path('history/messages/<int:conversation_id>/', views.load_conversation_messages, name='load_conversation_messages'),
 ]

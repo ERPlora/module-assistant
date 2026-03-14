@@ -138,5 +138,7 @@
 </style>
 
 <script nonce="{{ csp_nonce }}">
+var RESTORE_CONVERSATION_ID = {{ restore_conversation_id|default:"null" }};
+var LOAD_MESSAGES_URL = "{% url 'assistant:load_conversation_messages' conversation_id=0 %}".replace('/0/', '/{id}/');
 {% include "assistant/partials/chat_js.html" %}
 </script>

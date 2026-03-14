@@ -620,7 +620,37 @@
     });
 
     // Restore previous conversation on page load
-    if (restoreChatFromStorage()) {
+    function loadConversationFromServer(conversationId) {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var url = (typeof LOAD_MESSAGES_URL !== 'undefined' ? LOAD_MESSAGES_URL : '').replace('{id}', conversationId);
+        if (!url) return;
+
+        msgs.innerHTML = '<div class="flex items-center justify-center p-8"><span class="loading loading-md"></span></div>';
+
+        fetch(url, {
+            method: 'GET',
+            headers: { 'Accept': 'text/html' },
+        }).then(function(resp) {
+            return resp.text();
+        }).then(function(html) {
+            if (html) {
+                msgs.innerHTML = html;
+            } else {
+                msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
+                    '{% trans "Could not load conversation history." %}' + '</p></div></div>';
+            }
+            scrollToBottom();
+            saveChatToStorage();
+        }).catch(function() {
+            msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
+                '{% trans "Could not load conversation history." %}' + '</p></div></div>';
+        });
+    }
+
+    if (typeof RESTORE_CONVERSATION_ID !== 'undefined' && RESTORE_CONVERSATION_ID) {
+        loadConversationFromServer(RESTORE_CONVERSATION_ID);
+    } else if (restoreChatFromStorage()) {
         scrollToBottom();
     }
 })();
