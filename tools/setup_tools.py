@@ -1,130 +1,377 @@
 """
-P0 Setup Wizard Tools — only available in setup context.
+Simplified setup tools with strict schemas.
 
-These tools help configure the hub during the initial setup wizard.
+These tools consolidate multiple setup steps into single calls,
+reducing the number of tool invocations needed during hub configuration.
+All tools use strict=True for reliable structured output.
 """
+import logging
+
 from assistant.tools import AssistantTool, register_tool
+
+logger = logging.getLogger(__name__)
 
 
 @register_tool
-class SetRegionalConfig(AssistantTool):
-    name = "set_regional_config"
-    description = "Set regional configuration: language, timezone, country code, currency"
+class SetupBusiness(AssistantTool):
+    """Configure region, business info, tax, and blueprint in one call."""
+
+    name = "setup_business"
+    description = (
+        "Set up the entire business configuration in one step: "
+        "regional settings (language, timezone, country, currency), "
+        "business info (name, address, VAT), tax config (rate, included), "
+        "and optionally install a blueprint (business type). "
+        "Call this once during initial setup instead of multiple separate tools."
+    )
     requires_confirmation = True
     required_permission = None
     setup_only = True
+    strict = True
     parameters = {
         "type": "object",
         "properties": {
             "language": {
-                "type": ["string", "null"],
-                "description": "Language code (e.g., 'en', 'es', 'de', 'fr')",
+                "type": "string",
+                "description": "Language code (e.g., 'es', 'en', 'de', 'fr')",
             },
             "timezone": {
-                "type": ["string", "null"],
+                "type": "string",
                 "description": "Timezone (e.g., 'Europe/Madrid', 'America/New_York')",
             },
             "country_code": {
-                "type": ["string", "null"],
-                "description": "ISO 3166-1 alpha-2 country code (e.g., 'ES', 'US', 'DE')",
+                "type": "string",
+                "description": "ISO 3166-1 alpha-2 country code (e.g., 'ES', 'US')",
             },
             "currency": {
-                "type": ["string", "null"],
-                "description": "ISO 4217 currency code (e.g., 'EUR', 'USD', 'GBP')",
+                "type": "string",
+                "description": "ISO 4217 currency code (e.g., 'EUR', 'USD')",
+            },
+            "business_name": {
+                "type": "string",
+                "description": "Business name",
+            },
+            "business_address": {
+                "type": "string",
+                "description": "Full business address",
+            },
+            "vat_number": {
+                "type": "string",
+                "description": "VAT/Tax ID number (e.g., CIF, NIF, EIN). Use empty string if not provided.",
+            },
+            "tax_rate": {
+                "type": "number",
+                "description": "Default tax rate percentage (e.g., 21.0 for Spain)",
+            },
+            "tax_included": {
+                "type": "boolean",
+                "description": "Whether prices include tax by default",
+            },
+            "business_type_codes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Blueprint business type codes to install (e.g., ['restaurant']). Empty array to skip blueprint.",
             },
         },
-        "required": ["language", "timezone", "country_code", "currency"],
+        "required": [
+            "language", "timezone", "country_code", "currency",
+            "business_name", "business_address", "vat_number",
+            "tax_rate", "tax_included", "business_type_codes",
+        ],
         "additionalProperties": False,
     }
 
     def execute(self, args, request):
-        from apps.configuration.models import HubConfig
-        config = HubConfig.get_solo()
-        updated = []
+        from apps.configuration.models import HubConfig, StoreConfig
 
-        for field in ['language', 'timezone', 'country_code', 'currency']:
-            value = args.get(field)
-            if value is not None:
-                setattr(config, field, value)
-                updated.append(field)
+        # 1. Regional config
+        hub_config = HubConfig.get_solo()
+        hub_config.language = args['language']
+        hub_config.timezone = args['timezone']
+        hub_config.country_code = args['country_code']
+        hub_config.currency = args['currency']
+        hub_config.save()
 
-        if updated:
-            config.save()
+        # 2. Business info + tax
+        store_config = StoreConfig.get_solo()
+        store_config.business_name = args['business_name']
+        store_config.business_address = args['business_address']
+        store_config.vat_number = args['vat_number']
+        store_config.tax_rate = args['tax_rate']
+        store_config.tax_included = args['tax_included']
+        store_config.is_configured = True
+        store_config.save()
 
-        return {"success": True, "updated_fields": updated}
+        result = {
+            "success": True,
+            "regional": {
+                "language": hub_config.language,
+                "timezone": hub_config.timezone,
+                "country_code": hub_config.country_code,
+                "currency": hub_config.currency,
+            },
+            "business": {
+                "name": store_config.business_name,
+                "tax_rate": str(store_config.tax_rate),
+                "tax_included": store_config.tax_included,
+            },
+        }
+
+        # 3. Blueprint (optional)
+        type_codes = args.get('business_type_codes', [])
+        if type_codes:
+            try:
+                from apps.core.services.blueprint_service import BlueprintService
+                bp_result = BlueprintService.install_blueprint(hub_config, type_codes)
+                result["blueprint"] = {
+                    "installed": True,
+                    "modules": bp_result.get('modules_installed', []),
+                    "roles": bp_result.get('roles_created', []),
+                }
+            except Exception as e:
+                logger.exception("Blueprint install failed in setup_business")
+                result["blueprint"] = {
+                    "installed": False,
+                    "error": str(e),
+                }
+
+        # 4. Mark setup complete
+        hub_config.is_configured = True
+        hub_config.save()
+
+        return result
 
 
 @register_tool
-class SetBusinessInfo(AssistantTool):
-    name = "set_business_info"
-    description = "Set business information: name, address, VAT/tax ID number"
+class BulkCreateEmployees(AssistantTool):
+    """Create multiple employees in one call."""
+
+    name = "bulk_create_employees"
+    description = (
+        "Create multiple employees at once. Each employee gets a name, role, "
+        "PIN code, and optional email. Use this instead of calling create_employee "
+        "multiple times."
+    )
     requires_confirmation = True
-    required_permission = None
-    setup_only = True
+    required_permission = 'accounts.add_localuser'
+    strict = True
     parameters = {
         "type": "object",
         "properties": {
-            "business_name": {"type": "string", "description": "Business name"},
-            "business_address": {"type": "string", "description": "Business address"},
-            "vat_number": {"type": "string", "description": "VAT/Tax ID number (e.g., CIF, NIF, EIN)"},
+            "employees": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "first_name": {"type": "string", "description": "First name"},
+                        "last_name": {"type": "string", "description": "Last name"},
+                        "role": {
+                            "type": "string",
+                            "description": "Role slug (e.g., 'admin', 'manager', 'employee', 'viewer')",
+                        },
+                        "pin": {
+                            "type": "string",
+                            "description": "4-digit PIN code for login",
+                        },
+                        "email": {
+                            "type": "string",
+                            "description": "Email address. Use empty string if not provided.",
+                        },
+                    },
+                    "required": ["first_name", "last_name", "role", "pin", "email"],
+                    "additionalProperties": False,
+                },
+                "description": "List of employees to create",
+            },
         },
-        "required": ["business_name", "business_address", "vat_number"],
+        "required": ["employees"],
         "additionalProperties": False,
     }
 
     def execute(self, args, request):
-        from apps.configuration.models import StoreConfig
-        store = StoreConfig.get_solo()
-        store.business_name = args['business_name']
-        store.business_address = args['business_address']
-        store.vat_number = args['vat_number']
-        store.save()
+        from apps.accounts.models import LocalUser, Role
+
+        created = []
+        errors = []
+
+        for emp in args['employees']:
+            try:
+                # Find role
+                role = Role.objects.filter(slug=emp['role']).first()
+                if not role:
+                    errors.append({
+                        "name": f"{emp['first_name']} {emp['last_name']}",
+                        "error": f"Role '{emp['role']}' not found",
+                    })
+                    continue
+
+                # Check PIN uniqueness
+                if LocalUser.objects.filter(pin=emp['pin']).exists():
+                    errors.append({
+                        "name": f"{emp['first_name']} {emp['last_name']}",
+                        "error": f"PIN {emp['pin']} already in use",
+                    })
+                    continue
+
+                user = LocalUser.objects.create(
+                    first_name=emp['first_name'],
+                    last_name=emp['last_name'],
+                    pin=emp['pin'],
+                    email=emp['email'] or '',
+                    role=role,
+                    is_active=True,
+                )
+                created.append({
+                    "id": user.pk,
+                    "name": f"{user.first_name} {user.last_name}",
+                    "role": role.name,
+                    "pin": user.pin,
+                })
+            except Exception as e:
+                errors.append({
+                    "name": f"{emp['first_name']} {emp['last_name']}",
+                    "error": str(e),
+                })
 
         return {
-            "success": True,
-            "business_name": store.business_name,
+            "success": len(errors) == 0,
+            "created_count": len(created),
+            "created": created,
+            "errors": errors,
         }
 
 
 @register_tool
-class SetTaxConfig(AssistantTool):
-    name = "set_tax_config"
-    description = "Set tax configuration: default tax rate and whether prices include tax"
+class BulkCreateServices(AssistantTool):
+    """Create service categories and services in bulk."""
+
+    name = "bulk_create_services"
+    description = (
+        "Create service categories with their services in one call. "
+        "Each category contains a list of services with name, duration, and price. "
+        "Requires the 'services' module to be installed."
+    )
     requires_confirmation = True
-    required_permission = None
-    setup_only = True
+    required_permission = 'services.add_service'
+    strict = True
     parameters = {
         "type": "object",
         "properties": {
-            "tax_rate": {"type": "number", "description": "Default tax rate percentage (e.g., 21.0)"},
-            "tax_included": {"type": "boolean", "description": "Whether prices include tax by default"},
+            "categories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Category name"},
+                        "services": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "description": "Service name"},
+                                    "duration_minutes": {
+                                        "type": "integer",
+                                        "description": "Duration in minutes",
+                                    },
+                                    "price": {
+                                        "type": "string",
+                                        "description": "Price as decimal string (e.g., '25.00')",
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Service description. Use empty string if none.",
+                                    },
+                                },
+                                "required": ["name", "duration_minutes", "price", "description"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["name", "services"],
+                    "additionalProperties": False,
+                },
+                "description": "List of categories, each with their services",
+            },
         },
-        "required": ["tax_rate", "tax_included"],
+        "required": ["categories"],
         "additionalProperties": False,
     }
 
     def execute(self, args, request):
-        from apps.configuration.models import StoreConfig
-        store = StoreConfig.get_solo()
-        store.tax_rate = args['tax_rate']
-        store.tax_included = args['tax_included']
-        store.is_configured = True
-        store.save()
+        from decimal import Decimal, InvalidOperation
+
+        try:
+            from services.models import ServiceCategory, Service
+        except ImportError:
+            return {
+                "success": False,
+                "error": "The 'services' module is not installed.",
+            }
+
+        created_categories = []
+        created_services = []
+        errors = []
+
+        for cat_data in args['categories']:
+            try:
+                category, _ = ServiceCategory.objects.get_or_create(
+                    name=cat_data['name'],
+                )
+
+                for svc_data in cat_data['services']:
+                    try:
+                        price = Decimal(svc_data['price'])
+                    except (InvalidOperation, ValueError):
+                        errors.append({
+                            "service": svc_data['name'],
+                            "error": f"Invalid price: {svc_data['price']}",
+                        })
+                        continue
+
+                    service, was_created = Service.objects.get_or_create(
+                        name=svc_data['name'],
+                        category=category,
+                        defaults={
+                            'duration_minutes': svc_data['duration_minutes'],
+                            'price': price,
+                            'description': svc_data.get('description', ''),
+                        },
+                    )
+                    if was_created:
+                        created_services.append({
+                            "name": service.name,
+                            "category": category.name,
+                            "price": str(service.price),
+                            "duration": service.duration_minutes,
+                        })
+
+                created_categories.append(category.name)
+            except Exception as e:
+                errors.append({
+                    "category": cat_data['name'],
+                    "error": str(e),
+                })
 
         return {
-            "success": True,
-            "tax_rate": str(store.tax_rate),
-            "tax_included": store.tax_included,
+            "success": len(errors) == 0,
+            "categories_count": len(created_categories),
+            "services_count": len(created_services),
+            "categories": created_categories,
+            "services": created_services,
+            "errors": errors,
         }
 
 
 @register_tool
-class CompleteSetupStep(AssistantTool):
-    name = "complete_setup_step"
+class CompleteSetup(AssistantTool):
+    """Mark hub setup as complete."""
+
+    name = "complete_setup"
     description = "Mark the hub setup as complete. Call this after all configuration steps are done."
     requires_confirmation = True
     required_permission = None
     setup_only = True
+    strict = True
     parameters = {
         "type": "object",
         "properties": {},
@@ -134,6 +381,7 @@ class CompleteSetupStep(AssistantTool):
 
     def execute(self, args, request):
         from apps.configuration.models import HubConfig, StoreConfig
+
         hub_config = HubConfig.get_solo()
         store_config = StoreConfig.get_solo()
 

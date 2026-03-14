@@ -536,12 +536,14 @@ class InstallModules(AssistantTool):
                 # Register installed modules with Cloud so ensure_modules
                 # can restore them after container restart
                 try:
+                    from apps.core.services.module_install_service import ModuleInstallService as _MIS
                     for mid in to_install:
                         try:
+                            version = _MIS.get_installed_version(mid)
                             http_requests.post(
                                 f"{base_url}/api/marketplace/modules/{mid}/mark_installed/",
                                 headers={'X-Hub-Token': auth_token},
-                                json={'version': '1.0.0'},
+                                json={'version': version},
                                 timeout=10,
                             )
                         except Exception:
