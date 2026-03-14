@@ -66,6 +66,7 @@ class AssistantTool:
     short_description: str = ''  # Compact 1-line version sent to LLM. Falls back to description.
     parameters: dict = {}
     module_id: str = None
+    strict: bool = True  # Set to False for tools with free-form object params
     requires_confirmation: bool = False
     required_permission: str = None
     setup_only: bool = False
@@ -126,12 +127,19 @@ class AssistantTool:
                 for ex in self.examples
             )
             desc += f"\n\nExamples:\n{examples_text}"
+        if self.strict:
+            return {
+                'type': 'function',
+                'name': self.name,
+                'description': desc,
+                'strict': True,
+                'parameters': _make_strict_schema(self.parameters),
+            }
         return {
             'type': 'function',
             'name': self.name,
             'description': desc,
-            'strict': True,
-            'parameters': _make_strict_schema(self.parameters),
+            'parameters': self.parameters,
         }
 
 

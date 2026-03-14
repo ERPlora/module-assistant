@@ -45,6 +45,7 @@ def _set_plan_progress(request_id, step_index, total, action, status, message=''
 @register_tool
 class ExecutePlan(AssistantTool):
     name = "execute_plan"
+    strict = False  # params is free-form, can't use strict mode
     description = (
         "Execute a business configuration plan (or subset) atomically. "
         "Takes a list of steps, each with an 'action' and 'params'. "
@@ -163,6 +164,13 @@ class ExecutePlan(AssistantTool):
         for i, step in enumerate(steps):
             action = step.get('action', '')
             params = step.get('params', {})
+            # Fallback: if LLM omitted 'params' but put fields at step top level,
+            # extract them as params (gpt-4o-mini often drops the params wrapper).
+            if not params:
+                _step_schema_keys = {'action', 'params', 'description', 'rollback_action', 'rollback_params'}
+                extra = {k: v for k, v in step.items() if k not in _step_schema_keys}
+                if extra:
+                    params = extra
             description = step.get('description', '') or action.replace('_', ' ')
 
             _set_plan_progress(
