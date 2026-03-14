@@ -741,7 +741,12 @@ def execute_confirmed_action(action_log, request, plan_request_id=None):
         # Check inner success field (e.g. execute_plan returns {success: false, errors: [...]})
         if isinstance(result, dict) and result.get('success') is False:
             errors = result.get('errors', [])
-            error_msg = '; '.join(errors) if errors else 'Action completed with errors'
+            if errors:
+                error_msg = '; '.join(
+                    e if isinstance(e, str) else str(e) for e in errors
+                )
+            else:
+                error_msg = 'Action completed with errors'
             action_log.result = result
             action_log.success = False
             action_log.error_message = error_msg

@@ -190,52 +190,75 @@ class BulkCreateEmployees(AssistantTool):
 
     def execute(self, args, request):
         from apps.accounts.models import LocalUser, Role
+        import uuid as _uuid
 
+        hub_id = request.session.get('hub_id')
         created = []
         errors = []
 
         for emp in args['employees']:
+            name = f"{emp['first_name']} {emp['last_name']}".strip()
             try:
-                # Find role
-                role = Role.objects.filter(slug=emp['role']).first()
-                if not role:
-                    errors.append({
-                        "name": f"{emp['first_name']} {emp['last_name']}",
-                        "error": f"Role '{emp['role']}' not found",
+                # Check for existing employee by name
+                existing = LocalUser.objects.filter(hub_id=hub_id, name=name).first()
+                if existing:
+                    created.append({
+                        "id": str(existing.pk),
+                        "name": existing.name,
+                        "status": "already_exists",
                     })
                     continue
 
-                # Check PIN uniqueness
-                if LocalUser.objects.filter(pin=emp['pin']).exists():
-                    errors.append({
-                        "name": f"{emp['first_name']} {emp['last_name']}",
-                        "error": f"PIN {emp['pin']} already in use",
-                    })
-                    continue
+                # Find role object
+                role_name = emp['role']
+                role_obj = Role.objects.filter(
+                    hub_id=hub_id, name__iexact=role_name, is_deleted=False,
+                ).first()
+                if not role_obj:
+                    # Try slug match
+                    role_obj = Role.objects.filter(
+                        hub_id=hub_id, slug__iexact=role_name, is_deleted=False,
+                    ).first()
 
-                user = LocalUser.objects.create(
-                    first_name=emp['first_name'],
-                    last_name=emp['last_name'],
-                    pin=emp['pin'],
-                    email=emp['email'] or '',
-                    role=role,
+                # Determine legacy role field value
+                legacy_role = 'employee'
+                role_lower = role_name.lower()
+                if role_lower in ('admin', 'administrator', 'directora', 'director'):
+                    legacy_role = 'admin'
+                elif role_lower in ('manager', 'gerente', 'encargado', 'encargada'):
+                    legacy_role = 'manager'
+                elif role_lower in ('viewer', 'visor', 'observador'):
+                    legacy_role = 'viewer'
+
+                email = emp.get('email') or ''
+                if not email:
+                    email = f"{_uuid.uuid4().hex[:8]}@placeholder.local"
+
+                user = LocalUser(
+                    hub_id=hub_id,
+                    name=name,
+                    email=email,
+                    role=legacy_role,
+                    role_obj=role_obj,
                     is_active=True,
                 )
+                pin = emp.get('pin')
+                if pin:
+                    user.set_pin(str(pin))
+                user.save()
+
                 created.append({
-                    "id": user.pk,
-                    "name": f"{user.first_name} {user.last_name}",
-                    "role": role.name,
-                    "pin": user.pin,
+                    "id": str(user.pk),
+                    "name": user.name,
+                    "role": role_obj.name if role_obj else legacy_role,
+                    "status": "created",
                 })
             except Exception as e:
-                errors.append({
-                    "name": f"{emp['first_name']} {emp['last_name']}",
-                    "error": str(e),
-                })
+                errors.append(f"{name}: {str(e)}")
 
         return {
             "success": len(errors) == 0,
-            "created_count": len(created),
+            "created_count": len([c for c in created if c.get('status') == 'created']),
             "created": created,
             "errors": errors,
         }
