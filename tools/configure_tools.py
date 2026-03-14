@@ -351,6 +351,21 @@ class ExecutePlan(AssistantTool):
             'create_station': self._create_station,
         }
 
+        # Common LLM aliases
+        aliases = {
+            'create_staff_member': 'create_employee',
+            'create_staff': 'create_employee',
+            'add_employee': 'create_employee',
+            'add_staff': 'create_employee',
+            'add_service': 'create_service',
+            'add_product': 'create_product',
+            'add_category': 'create_category',
+            'set_business': 'set_business_info',
+            'set_config': 'set_regional_config',
+            'create_services': 'create_service',
+        }
+        action = aliases.get(action, action)
+
         handler = dispatch.get(action)
         if handler is None:
             raise ValueError(f"Unknown action: {action}")
