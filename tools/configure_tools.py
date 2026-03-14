@@ -607,14 +607,15 @@ class ExecutePlan(AssistantTool):
         sector = params.get('sector', '')
 
         # Accept alternative param names the LLM might use
-        if not type_codes:
-            type_codes = params.get('business_type', [])
-            if isinstance(type_codes, str):
-                type_codes = [type_codes]
-        if not type_codes:
-            type_codes = params.get('types', [])
-            if isinstance(type_codes, str):
-                type_codes = [type_codes]
+        for key in ('business_type', 'types', 'type', 'business_types',
+                     'blueprint', 'blueprint_type', 'business_type_code',
+                     'business_type_codes', 'code', 'codes'):
+            if not type_codes:
+                val = params.get(key, [])
+                if isinstance(val, str):
+                    val = [val]
+                if val:
+                    type_codes = val
 
         # Fallback: use hub's already-configured business types
         if not type_codes:
