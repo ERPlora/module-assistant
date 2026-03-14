@@ -1944,6 +1944,8 @@ def format_confirmation_text(tool_name, tool_args):
         'add_call_notes': lambda a: f"Add notes to call {a.get('call_id', '')}",
         # Bank Sync
         'create_bank_account': lambda a: f"Create bank account: {a.get('name', '')}",
+        # Bulk operations
+        'bulk_create_employees': lambda a: f"Create {len(a.get('employees', []))} employees: {', '.join(e.get('first_name', '') + ' ' + e.get('last_name', '') for e in a.get('employees', []))}",
     }
 
     formatter = descriptions.get(tool_name)
@@ -1953,6 +1955,6 @@ def format_confirmation_text(tool_name, tool_args):
         except Exception:
             pass
 
-    # Generic fallback
-    args_str = ', '.join(f'{k}={v}' for k, v in tool_args.items() if v is not None)
+    # Generic fallback — stringify values to avoid join errors with dicts/lists
+    args_str = ', '.join(f'{k}={v!r}' if not isinstance(v, str) else f'{k}={v}' for k, v in tool_args.items() if v is not None)
     return f"{tool_name}({args_str})"
