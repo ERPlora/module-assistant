@@ -136,8 +136,9 @@ def _json_dumps(obj):
 # PAGE VIEWS
 # ============================================================================
 
-def _get_tier_features(hub_jwt):
-    """Fetch assistant tier features from Cloud. Returns feature list or empty list on error."""
+def _get_tier_info(hub_jwt):
+    """Fetch assistant tier info from Cloud. Returns dict with features, tier slug, etc."""
+    default = {'features': [], 'tier': 'free', 'tier_name': 'Free'}
     try:
         import requests as http_requests
         from django.conf import settings
@@ -148,10 +149,15 @@ def _get_tier_features(hub_jwt):
             timeout=3,
         )
         if resp.status_code == 200:
-            return resp.json().get('features', [])
+            data = resp.json()
+            return {
+                'features': data.get('features', []),
+                'tier': data.get('tier', 'free'),
+                'tier_name': data.get('tier_name', 'Free'),
+            }
     except Exception:
         pass
-    return []
+    return default
 
 
 @login_required
@@ -183,9 +189,17 @@ def chat_page(request):
     hub_config = HubConfig.get_config()
     context = 'setup' if (request.GET.get('context') == 'setup' or not hub_config.is_configured) else 'general'
 
-    # Get tier features to show/hide UI elements
-    tier_features = _get_tier_features(hub_config.hub_jwt)
+    # Get tier info to show/hide UI elements and upgrade link
+    tier_info = _get_tier_info(hub_config.hub_jwt)
+    tier_features = tier_info['features']
     can_attach = 'files' in tier_features or 'images' in tier_features
+    tier_slug = tier_info['tier']
+
+    # Build upgrade URL (Cloud dashboard)
+    from django.conf import settings
+    cloud_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+    show_upgrade = tier_slug != 'enterprise'
+    upgrade_url = f"{cloud_url}/dashboard/assistant/upgrade/" if show_upgrade else ''
 
     return {
         'conversations': conversations,
@@ -194,6 +208,9 @@ def chat_page(request):
         'is_setup_mode': context == 'setup',
         'can_attach': can_attach,
         'restore_conversation_id': restore_conversation.id if restore_conversation else None,
+        'tier_slug': tier_slug,
+        'show_upgrade': show_upgrade,
+        'upgrade_url': upgrade_url,
     }
 
 

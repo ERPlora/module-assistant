@@ -6,6 +6,15 @@
         <div id="chat-tier-info" class="flex items-center gap-2 text-xs opacity-75">
             <span id="tier-badge" class="badge badge-sm"></span>
             <span id="tier-usage" class="hidden"></span>
+            {% if show_upgrade %}
+            <a href="{{ upgrade_url }}" target="_blank" rel="noopener"
+               id="upgrade-link"
+               class="btn btn-ghost btn-sm text-xs hidden"
+               title="{% trans 'Upgrade your AI assistant plan' %}">
+                {% icon "arrow-up-outline" size="sm" %}
+                <span class="hidden sm:inline">{% trans "Upgrade" %}</span>
+            </a>
+            {% endif %}
         </div>
         <div class="flex items-center gap-1">
             <button type="button"

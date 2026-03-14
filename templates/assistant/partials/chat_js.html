@@ -92,6 +92,9 @@
                 else if (pct <= 0.33) usageEl.classList.add('color-warning');
                 else usageEl.classList.add('color-success');
             }
+            // Show upgrade link after first tier info received
+            var upgradeLink = document.getElementById('upgrade-link');
+            if (upgradeLink) upgradeLink.classList.remove('hidden');
         } catch(e) {}
     }
 
