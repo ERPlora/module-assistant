@@ -91,6 +91,7 @@ class ExecutePlan(AssistantTool):
             {"action": "create_category", "params": {"name": "Bebidas"}},
             {"action": "create_product", "params": {"name": "Agua mineral", "price": 2.00, "stock": 50, "categories": ["Bebidas"]}},
             {"action": "create_service_category", "params": {"name": "Cortes"}},
+            {"action": "create_employee", "params": {"name": "Ana García", "role_name": "employee", "pin": "1234"}},
             {"action": "create_service", "params": {"name": "Corte + Peinado", "price": 25, "duration_minutes": 45, "category": "Cortes"}},
         ]},
     ]
@@ -489,13 +490,25 @@ class ExecutePlan(AssistantTool):
         from apps.accounts.models import LocalUser, Role
         hub_id = request.session.get('hub_id')
 
-        # Check for existing employee by name to avoid duplicates
-        existing = LocalUser.objects.filter(hub_id=hub_id, name=params['name']).first()
-        if existing:
-            return {"message": f"Employee '{params['name']}' already exists", "employee_id": str(existing.id), "name": existing.name}
+        # Accept various param shapes the LLM might use
+        name = params.get('name', '')
+        if not name:
+            first = params.get('first_name', '')
+            last = params.get('last_name', '')
+            name = f"{first} {last}".strip()
+        if not name:
+            name = params.get('full_name', '')
+        if not name:
+            raise ValueError("name is required for create_employee")
 
+        # Check for existing employee by name to avoid duplicates
+        existing = LocalUser.objects.filter(hub_id=hub_id, name=name).first()
+        if existing:
+            return {"message": f"Employee '{name}' already exists", "employee_id": str(existing.id), "name": existing.name}
+
+        role_name = params.get('role_name') or params.get('role') or 'employee'
         role_obj = Role.objects.filter(
-            hub_id=hub_id, name=params.get('role_name', 'employee'), is_deleted=False,
+            hub_id=hub_id, name=role_name, is_deleted=False,
         ).first()
 
         import uuid as _uuid
@@ -506,13 +519,14 @@ class ExecutePlan(AssistantTool):
 
         user = LocalUser(
             hub_id=hub_id,
-            name=params['name'],
+            name=name,
             email=email,
-            role=params.get('role_name', 'employee'),
+            role=role_name,
             role_obj=role_obj,
         )
-        if params.get('pin'):
-            user.set_pin(params['pin'])
+        pin = params.get('pin') or params.get('pin_code')
+        if pin:
+            user.set_pin(str(pin))
         user.save()
         return {"employee_id": str(user.id), "name": user.name}
 
@@ -720,11 +734,17 @@ class ExecutePlan(AssistantTool):
         if cat_name:
             category = ServiceCategory.objects.filter(name__iexact=cat_name).first()
 
+        duration = (
+            params.get('duration_minutes')
+            or params.get('duration')
+            or params.get('duration_min')
+            or 60
+        )
         svc = Service.objects.create(
             name=name,
             slug=slug,
             price=params.get('price', 0),
-            duration_minutes=params.get('duration_minutes', 60),
+            duration_minutes=int(duration),
             pricing_type=params.get('pricing_type', 'fixed'),
             description=params.get('description', ''),
             category=category,
