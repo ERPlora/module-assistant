@@ -164,7 +164,7 @@ class ExecutePlan(AssistantTool):
 
         for i, step in enumerate(steps):
             action = step.get('action', '')
-            params = step.get('params', {})
+            params = step.get('params') or {}
             # Fallback: if LLM omitted 'params' but put fields at step top level,
             # extract them as params (gpt-4o-mini often drops the params wrapper).
             if not params:
@@ -172,6 +172,9 @@ class ExecutePlan(AssistantTool):
                 extra = {k: v for k, v in step.items() if k not in _step_schema_keys}
                 if extra:
                     params = extra
+            # Last resort: parse description to build params for known actions
+            if not params:
+                params = self._params_from_description(action, step.get('description', ''))
             description = step.get('description', '') or action.replace('_', ' ')
 
             _set_plan_progress(
@@ -375,6 +378,43 @@ class ExecutePlan(AssistantTool):
             raise ValueError(f"Unknown action: {action}")
         logger.info("[ASSISTANT] Executing action=%s params=%s", action, params)
         return handler(params)
+
+    # ── Param recovery helpers ────────────────────────────────────
+
+    def _params_from_description(self, action, description):
+        """
+        Last-resort recovery: when LLM puts all info in the description
+        instead of params, try to extract structured data.
+        Pattern seen: "Crear rol 'chef' con permisos: sales.view_*, inventory.view_*"
+        """
+        import re
+        if not description:
+            return {}
+
+        if action == 'create_role':
+            # Try to extract role name from quotes or after "rol"
+            name_match = (
+                re.search(r"['\"](\w[\w\s]*?)['\"]", description)
+                or re.search(r"rol\s+(\w+)", description, re.IGNORECASE)
+            )
+            name = name_match.group(1).strip() if name_match else ''
+            # Extract wildcard patterns (word.word_* or word.*)
+            wildcards = re.findall(r'\b(\w+\.(?:\w+_)?\*)', description)
+            if name:
+                return {'name': name, 'wildcards': wildcards}
+
+        if action == 'create_employee':
+            # "Crear empleado 'Name' con rol X y PIN 1234"
+            name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+            name = name_match.group(1).strip() if name_match else ''
+            role_match = re.search(r"rol\s+['\"]?(\w+)['\"]?", description, re.IGNORECASE)
+            role_name = role_match.group(1) if role_match else 'employee'
+            pin_match = re.search(r"PIN\s+(\d{4,})", description, re.IGNORECASE)
+            pin = pin_match.group(1) if pin_match else ''
+            if name:
+                return {'name': name, 'role_name': role_name, 'pin': pin}
+
+        return {}
 
     # ── Error helpers ──────────────────────────────────────────────
 
