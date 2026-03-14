@@ -1,0 +1,626 @@
+{% load i18n %}
+(function() {
+    if (window._chatListenersAttached) return;
+    window._chatListenersAttached = true;
+
+    var CHAT_STORAGE_KEY = 'assistant_chat_';
+
+    // -------------------------------------------------------------------------
+    // Utility helpers
+    // -------------------------------------------------------------------------
+
+    function clearFileAttachment() {
+        var fi = document.getElementById('chat-file');
+        if (fi) fi.value = '';
+        var fp = document.getElementById('file-preview');
+        if (fp) fp.classList.add('hidden');
+        var img = document.getElementById('file-preview-img');
+        if (img) { img.classList.add('hidden'); img.classList.remove('active'); }
+        var icon = document.getElementById('file-preview-icon');
+        if (icon) { icon.classList.add('hidden'); icon.classList.remove('active'); }
+    }
+
+    function saveChatToStorage() {
+        var convId = document.getElementById('conv-id');
+        var msgs = document.getElementById('chat-messages');
+        if (convId && convId.value && msgs) {
+            try {
+                sessionStorage.setItem(CHAT_STORAGE_KEY + convId.value, msgs.innerHTML);
+            } catch(e) {}
+        }
+    }
+
+    function restoreChatFromStorage() {
+        var convId = document.getElementById('conv-id');
+        var msgs = document.getElementById('chat-messages');
+        if (convId && convId.value && msgs) {
+            try {
+                var saved = sessionStorage.getItem(CHAT_STORAGE_KEY + convId.value);
+                if (saved) {
+                    msgs.innerHTML = saved;
+                    return true;
+                }
+            } catch(e) {}
+        }
+        return false;
+    }
+
+    function scrollToBottom() {
+        var msgs = document.getElementById('chat-messages');
+        if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    function setLoading(on) {
+        var btn = document.getElementById('chat-submit');
+        var inp = document.getElementById('chat-input');
+        if (!btn || !inp) return;
+        btn.disabled = on;
+        inp.disabled = on;
+        if (on) btn.classList.add('is-loading');
+        else btn.classList.remove('is-loading');
+    }
+
+    function appendUserBubble(msg) {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var html = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-user';
+        div.innerHTML = '<div class="chat-bubble">' + html + '</div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+    }
+
+    function updateTierInfo(usageJson) {
+        if (!usageJson) return;
+        try {
+            var data = typeof usageJson === 'string' ? JSON.parse(usageJson) : usageJson;
+            var badge = document.getElementById('tier-badge');
+            var usageEl = document.getElementById('tier-usage');
+            if (badge && data.tier_name) {
+                badge.textContent = data.tier_name;
+                badge.className = 'badge badge-sm' + (data.tier_name === 'free' ? ' badge-outline' : ' color-primary');
+            }
+            if (usageEl && data.messages_limit > 0) {
+                var used = data.messages_used || 0;
+                var limit = data.messages_limit;
+                var remaining = Math.max(0, limit - used);
+                var pct = remaining / limit;
+                usageEl.textContent = used + '/' + limit;
+                usageEl.classList.remove('hidden', 'color-success', 'color-warning', 'color-error');
+                if (pct <= 0.1) usageEl.classList.add('color-error');
+                else if (pct <= 0.33) usageEl.classList.add('color-warning');
+                else usageEl.classList.add('color-success');
+            }
+        } catch(e) {}
+    }
+
+    // Legacy HTMX helpers (used by fallback polling path)
+    window.chatBeforeRequest = function(form) {
+        var inp = document.getElementById('chat-input');
+        var msg = inp ? inp.value.trim() : '';
+        if (msg) appendUserBubble(msg);
+        setLoading(true);
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+    };
+
+    window.chatAfterRequest = function(form, event) {
+        setLoading(false);
+        clearFileAttachment();
+        var xhr = event && event.detail && event.detail.xhr;
+        if (xhr) {
+            var convId = xhr.getResponseHeader('X-Conversation-Id');
+            if (convId) {
+                var convInput = document.getElementById('conv-id');
+                if (convInput) convInput.value = convId;
+            }
+            var usage = xhr.getResponseHeader('X-Assistant-Usage');
+            updateTierInfo(usage);
+        }
+        scrollToBottom();
+        saveChatToStorage();
+        var inp = document.getElementById('chat-input');
+        if (inp) inp.focus();
+    };
+
+    // -------------------------------------------------------------------------
+    // SSE streaming
+    // -------------------------------------------------------------------------
+
+    function appendTypingBubble() {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return null;
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-assistant';
+        div.id = 'chat-streaming-bubble';
+        div.innerHTML = '<div class="chat-bubble prose" id="chat-streaming-content">' +
+            '<div class="chat-typing">' +
+            '<span class="chat-typing-dot"></span>' +
+            '<span class="chat-typing-dot"></span>' +
+            '<span class="chat-typing-dot"></span>' +
+            '</div>' +
+            '</div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+        return div;
+    }
+
+    function appendToolIndicator(toolName) {
+        var bubble = document.getElementById('chat-streaming-bubble');
+        if (!bubble) {
+            var msgs = document.getElementById('chat-messages');
+            if (!msgs) return;
+            bubble = document.createElement('div');
+            bubble.className = 'chat-message chat-assistant';
+            bubble.id = 'chat-streaming-bubble';
+            bubble.innerHTML = '<div class="chat-bubble prose" id="chat-streaming-content"></div>';
+            msgs.appendChild(bubble);
+        }
+        var content = document.getElementById('chat-streaming-content');
+        if (!content) return;
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        var indicator = document.createElement('div');
+        indicator.className = 'chat-tool-indicator';
+        indicator.innerHTML = '<span class="loading loading-sm"></span><span>' +
+            _formatToolName(toolName) + '</span>';
+        indicator.dataset.toolName = toolName;
+        content.appendChild(indicator);
+        scrollToBottom();
+    }
+
+    function _formatToolName(name) {
+        return name.replace(/_/g, ' ');
+    }
+
+    var _streamRawText = '';
+    function appendTextDelta(text) {
+        var content = document.getElementById('chat-streaming-content');
+        if (!content) return;
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        _streamRawText += text;
+
+        var textNode = content.querySelector('.stream-text');
+        if (!textNode) {
+            textNode = document.createElement('span');
+            textNode.className = 'stream-text';
+            var firstTool = content.querySelector('.chat-tool-indicator');
+            if (firstTool) {
+                content.insertBefore(textNode, firstTool);
+            } else {
+                content.appendChild(textNode);
+            }
+        }
+        textNode.innerText = _streamRawText;
+        scrollToBottom();
+    }
+
+    function appendErrorBubble(message) {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var div = document.createElement('div');
+        div.className = 'chat-message chat-system';
+        div.innerHTML = '<div class="callout callout-error"><div class="callout-content">' +
+            '<div class="callout-text">' +
+            message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+            '</div></div></div>';
+        msgs.appendChild(div);
+        scrollToBottom();
+    }
+
+    function finalizeStreamBubble(markdownText) {
+        var bubble = document.getElementById('chat-streaming-bubble');
+        if (!bubble) return;
+
+        bubble.removeAttribute('id');
+        var content = bubble.querySelector('#chat-streaming-content');
+        if (content) content.removeAttribute('id');
+
+        if (!content) return;
+
+        var textNode = content.querySelector('.stream-text');
+        var dots = content.querySelector('.chat-typing');
+        if (dots) dots.remove();
+
+        if (markdownText) {
+            var rendered = _renderMarkdown(markdownText);
+            if (textNode) {
+                textNode.outerHTML = rendered;
+            } else {
+                var firstTool = content.querySelector('.chat-tool-indicator');
+                var tempDiv = document.createElement('div');
+                tempDiv.innerHTML = rendered;
+                while (tempDiv.firstChild) {
+                    if (firstTool) content.insertBefore(tempDiv.firstChild, firstTool);
+                    else content.appendChild(tempDiv.firstChild);
+                }
+            }
+        }
+
+        var indicators = content.querySelectorAll('.chat-tool-indicator');
+        indicators.forEach(function(ind) { ind.remove(); });
+    }
+
+    function _renderMarkdown(text) {
+        var html = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/```[\w]*\n?([\s\S]*?)```/g, function(_, code) {
+                return '<pre><code>' + code.trim() + '</code></pre>';
+            })
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+            .replace(/_([^_]+)_/g, '<em>$1</em>')
+            .replace(/^[\*\-] (.+)$/gm, '<li>$1</li>')
+            .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+            .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+            .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+            .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+            .replace(/\n\n/g, '</p><p>')
+            .replace(/\n/g, '<br>');
+
+        html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+        if (!/^<[hup]/.test(html.trim())) {
+            html = '<p>' + html + '</p>';
+        }
+        return html;
+    }
+
+    // -------------------------------------------------------------------------
+    // Form submission (SSE + fallback)
+    // -------------------------------------------------------------------------
+
+    function submitWithStreaming(form) {
+        var inp = document.getElementById('chat-input');
+        var message = inp ? inp.value.trim() : '';
+        var hasFile = document.getElementById('chat-file') &&
+                      document.getElementById('chat-file').files.length > 0;
+
+        if (!message && !hasFile) return;
+
+        if (hasFile) {
+            _submitWithFallback(form, message);
+            return;
+        }
+
+        var streamUrl = form.dataset.streamUrl;
+        if (!streamUrl || typeof fetch === 'undefined') {
+            _submitWithFallback(form, message);
+            return;
+        }
+
+        appendUserBubble(message);
+        setLoading(true);
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+        _streamRawText = '';
+
+        var convInput = document.getElementById('conv-id');
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', convInput ? convInput.value : '');
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+
+        appendTypingBubble();
+
+        var hasFunctionCalls = false;
+        var fullResponseOutput = null;
+        var streamFailed = false;
+
+        fetch(streamUrl, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-CSRFToken': csrfInput ? csrfInput.value : '',
+                'Accept': 'text/event-stream',
+            },
+        }).then(function(response) {
+            if (!response.ok || !response.body) {
+                throw new Error('Stream not available (status ' + response.status + ')');
+            }
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function processLine(line) {
+                if (!line.startsWith('data: ')) return;
+                var raw = line.slice(6).trim();
+                if (raw === '[DONE]') return;
+                try {
+                    var evt = JSON.parse(raw);
+                    if (evt.type === 'conv_id') {
+                        if (convInput) convInput.value = evt.conversation_id;
+                    } else if (evt.type === 'text_delta') {
+                        appendTextDelta(evt.text || '');
+                    } else if (evt.type === 'function_call') {
+                        hasFunctionCalls = true;
+                        appendToolIndicator(evt.name || '');
+                    } else if (evt.type === 'response') {
+                        fullResponseOutput = evt.output || [];
+                        var usage = evt.usage;
+                        if (usage) updateTierInfo(usage);
+                    } else if (evt.type === 'error') {
+                        streamFailed = true;
+                        var bubble = document.getElementById('chat-streaming-bubble');
+                        if (bubble) bubble.remove();
+                        appendErrorBubble(evt.message || 'An error occurred.');
+                    }
+                } catch(e) {}
+            }
+
+            function pump() {
+                return reader.read().then(function(result) {
+                    if (result.done) return;
+                    buffer += decoder.decode(result.value, { stream: true });
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    lines.forEach(processLine);
+                    return pump();
+                });
+            }
+
+            return pump();
+
+        }).then(function() {
+            if (buffer) {
+                buffer.split('\n').forEach(processLine);
+                buffer = '';
+            }
+
+            if (streamFailed) {
+                setLoading(false);
+                saveChatToStorage();
+                var inp2 = document.getElementById('chat-input');
+                if (inp2) inp2.focus();
+                return;
+            }
+
+            if (hasFunctionCalls) {
+                var bubble = document.getElementById('chat-streaming-bubble');
+                if (bubble) bubble.remove();
+                _streamRawText = '';
+                _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
+            } else {
+                finalizeStreamBubble(_streamRawText);
+                setLoading(false);
+                clearFileAttachment();
+                saveChatToStorage();
+                var inp2 = document.getElementById('chat-input');
+                if (inp2) inp2.focus();
+            }
+
+        }).catch(function(err) {
+            var bubble = document.getElementById('chat-streaming-bubble');
+            if (bubble) bubble.remove();
+            _streamRawText = '';
+            _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
+        });
+    }
+
+    function _submitWithFallback(form, message) {
+        var fallbackUrl = form.dataset.fallbackUrl;
+        if (!fallbackUrl) return;
+
+        appendUserBubble(message);
+        setLoading(true);
+
+        var inp = document.getElementById('chat-input');
+        if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+
+        var convInput = document.getElementById('conv-id');
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+        var fileInput = document.getElementById('chat-file');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', convInput ? convInput.value : '');
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+        if (fileInput && fileInput.files.length > 0) formData.append('file', fileInput.files[0]);
+
+        fetch(fallbackUrl, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
+        }).then(function(resp) {
+            var convId = resp.headers.get('X-Conversation-Id');
+            if (convId && convInput) convInput.value = convId;
+            var usage = resp.headers.get('X-Assistant-Usage');
+            updateTierInfo(usage);
+            return resp.text();
+        }).then(function(html) {
+            var msgs = document.getElementById('chat-messages');
+            if (msgs && html) {
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                while (tmp.firstChild) msgs.appendChild(tmp.firstChild);
+                if (window.htmx) htmx.process(msgs);
+            }
+            setLoading(false);
+            clearFileAttachment();
+            scrollToBottom();
+            saveChatToStorage();
+            var inp2 = document.getElementById('chat-input');
+            if (inp2) inp2.focus();
+        }).catch(function() {
+            appendErrorBubble('{% trans "Something went wrong. Please try again." %}');
+            setLoading(false);
+        });
+    }
+
+    function _submitFallbackWithMessage(form, message, conversationId) {
+        setLoading(true);
+        _streamRawText = '';
+
+        var fallbackUrl = form.dataset.fallbackUrl;
+        if (!fallbackUrl) { setLoading(false); return; }
+
+        var contextInput = form.querySelector('[name="context"]');
+        var csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+        var convInput = document.getElementById('conv-id');
+
+        var formData = new FormData();
+        formData.append('message', message);
+        formData.append('conversation_id', conversationId || (convInput ? convInput.value : ''));
+        formData.append('context', contextInput ? contextInput.value : 'general');
+        if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+
+        fetch(fallbackUrl, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
+        }).then(function(resp) {
+            var convId = resp.headers.get('X-Conversation-Id');
+            if (convId && convInput) convInput.value = convId;
+            var usage = resp.headers.get('X-Assistant-Usage');
+            updateTierInfo(usage);
+            return resp.text();
+        }).then(function(html) {
+            var msgs = document.getElementById('chat-messages');
+            if (msgs && html) {
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                while (tmp.firstChild) msgs.appendChild(tmp.firstChild);
+                if (window.htmx) htmx.process(msgs);
+            }
+            setLoading(false);
+            clearFileAttachment();
+            scrollToBottom();
+            saveChatToStorage();
+            var inp = document.getElementById('chat-input');
+            if (inp) inp.focus();
+        }).catch(function() {
+            appendErrorBubble('{% trans "Something went wrong. Please try again." %}');
+            setLoading(false);
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Form submit interception
+    // -------------------------------------------------------------------------
+
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (form.id !== 'chat-form') return;
+        e.preventDefault();
+        submitWithStreaming(form);
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            var form = document.getElementById('chat-form');
+            if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
+    });
+
+    document.addEventListener('input', function(e) {
+        if (e.target.id === 'chat-input') {
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        }
+    });
+
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('#chat-new')) {
+            var oldConvId = document.getElementById('conv-id').value;
+            if (oldConvId) {
+                try { sessionStorage.removeItem(CHAT_STORAGE_KEY + oldConvId); } catch(e2) {}
+            }
+            document.getElementById('conv-id').value = '';
+            var msgs = document.getElementById('chat-messages');
+            {% trans "Hello! I'm your AI assistant. How can I help?" as new_chat_msg %}
+            msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
+                '{{ new_chat_msg|escapejs }}' +
+                '</p></div></div>';
+            clearFileAttachment();
+            setLoading(false);
+            _streamRawText = '';
+            var inp = document.getElementById('chat-input');
+            if (inp) { inp.value = ''; inp.focus(); }
+            return;
+        }
+        if (e.target.closest('#chat-attach')) { document.getElementById('chat-file').click(); return; }
+        if (e.target.closest('#chat-file-remove')) { clearFileAttachment(); return; }
+        if (e.target.closest('#chat-mic')) {
+            var btn = e.target.closest('#chat-mic');
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            if (btn._recognition) {
+                btn._recognition.stop(); btn._recognition = null;
+                btn.classList.remove('recording', 'color-error'); return;
+            }
+            var recognition = new SR();
+            recognition.lang = document.documentElement.lang || 'en';
+            recognition.interimResults = true; recognition.continuous = false;
+            var inp = document.getElementById('chat-input');
+            var beforeText = inp ? inp.value : '';
+            recognition.onresult = function(ev) {
+                var t = '';
+                for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+                if (inp) inp.value = beforeText + (beforeText ? ' ' : '') + t;
+            };
+            recognition.onend = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            recognition.onerror = function() { btn._recognition = null; btn.classList.remove('recording', 'color-error'); };
+            btn._recognition = recognition;
+            btn.classList.add('recording', 'color-error');
+            recognition.start(); return;
+        }
+    });
+
+    document.addEventListener('change', function(e) {
+        if (e.target.id !== 'chat-file') return;
+        var file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+            if (window.showToast) showToast('{% trans "File too large. Maximum size is 10 MB." %}', 'warning');
+            e.target.value = ''; return;
+        }
+        var allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+        if (allowed.indexOf(file.type) === -1) {
+            if (window.showToast) showToast('{% trans "Unsupported file type. Please use JPEG, PNG, WebP, GIF, or PDF." %}', 'warning');
+            e.target.value = ''; return;
+        }
+        var preview = document.getElementById('file-preview');
+        var previewImg = document.getElementById('file-preview-img');
+        var previewIcon = document.getElementById('file-preview-icon');
+        document.getElementById('file-preview-name').textContent = file.name;
+        preview.classList.remove('hidden');
+        if (file.type.startsWith('image/')) {
+            var reader = new FileReader();
+            reader.onload = function(ev) {
+                previewImg.src = ev.target.result;
+                previewImg.classList.remove('hidden'); previewImg.classList.add('active');
+            };
+            reader.readAsDataURL(file);
+            previewIcon.classList.add('hidden'); previewIcon.classList.remove('active');
+        } else {
+            previewImg.classList.add('hidden'); previewImg.classList.remove('active');
+            previewIcon.classList.remove('hidden'); previewIcon.classList.add('active');
+        }
+    });
+
+    document.addEventListener('htmx:afterSwap', function(event) {
+        var msgs = document.getElementById('chat-messages');
+        if (msgs && (msgs === event.detail.target || msgs.contains(event.detail.target))) {
+            scrollToBottom();
+            saveChatToStorage();
+        }
+    });
+
+    // Restore previous conversation on page load
+    if (restoreChatFromStorage()) {
+        scrollToBottom();
+    }
+})();
