@@ -484,21 +484,39 @@ class ExecutePlan(AssistantTool):
         from apps.accounts.models import Role, RolePermission
         hub_id = request.session.get('hub_id')
 
+        # LLM sends name under various keys
+        name = (
+            params.get('name')
+            or params.get('role_name')
+            or params.get('title')
+            or params.get('label')
+        )
+        if not name:
+            raise ValueError("Missing 'name' for create_role")
+
         existing = Role.objects.filter(
-            hub_id=hub_id, name=params['name'], is_deleted=False,
+            hub_id=hub_id, name=name, is_deleted=False,
         ).first()
         if existing:
-            return {"message": f"Role '{params['name']}' already exists", "role_id": str(existing.id)}
+            return {"message": f"Role '{name}' already exists", "role_id": str(existing.id)}
+
+        # LLM sends permissions under various keys
+        wildcards = (
+            params.get('wildcards')
+            or params.get('permissions')
+            or params.get('permission_wildcards')
+            or []
+        )
 
         role = Role.objects.create(
             hub_id=hub_id,
-            name=params['name'],
-            display_name=params.get('display_name', params['name']),
+            name=name,
+            display_name=params.get('display_name', name),
             description=params.get('description', ''),
             source='custom',
             is_system=False,
         )
-        for wildcard in params.get('wildcards', []):
+        for wildcard in wildcards:
             RolePermission.objects.create(
                 hub_id=hub_id,
                 role=role,
