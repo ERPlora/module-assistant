@@ -430,6 +430,27 @@ class ExecutePlan(AssistantTool):
             if name:
                 return {'name': name, 'role_name': role_name, 'pin': pin}
 
+        if action == 'install_blueprint':
+            # Extract type_codes from description like "install blueprint (restaurant)"
+            # or "Install restaurant blueprint" or "blueprint for restaurant"
+            from apps.configuration.models import HubConfig
+            desc_lower = description.lower()
+            # Try to find known business type codes in the description
+            known_types = [
+                'restaurant', 'beauty_salon', 'hotel', 'dental_clinic',
+                'academy', 'rental', 'accounting_firm', 'law_firm',
+                'real_estate', 'manufacturing', 'travel_agency',
+                'software_company', 'tobacco_shop', 'bar', 'cafe',
+                'bakery', 'gym', 'spa', 'veterinary', 'pharmacy',
+            ]
+            found = [t for t in known_types if t in desc_lower]
+            if not found:
+                # Fallback: use hub config's selected types
+                hub_config = HubConfig.get_solo()
+                found = getattr(hub_config, 'selected_business_types', []) or []
+            if found:
+                return {'type_codes': found}
+
         return {}
 
     # ── Error helpers ──────────────────────────────────────────────
