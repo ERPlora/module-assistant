@@ -619,12 +619,21 @@ class ExecutePlan(AssistantTool):
     def _create_tax_class(self, params):
         from apps.configuration.models import TaxClass
 
+        name = (params.get('name') or params.get('tax_name') or
+                params.get('label') or params.get('title'))
+        rate = params.get('rate') or params.get('tax_rate') or params.get('percentage')
+        if rate is None:
+            raise ValueError("Tax rate is required")
+        rate = float(rate)
+        if not name:
+            name = f"Tax {rate}%"
+
         if params.get('is_default'):
             TaxClass.objects.filter(is_default=True).update(is_default=False)
 
         tc = TaxClass.objects.create(
-            name=params['name'],
-            rate=params['rate'],
+            name=name,
+            rate=rate,
             description=params.get('description', ''),
             is_default=params.get('is_default', False),
         )
