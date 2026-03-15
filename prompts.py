@@ -642,15 +642,8 @@ Be friendly, conversational, and guide them step by step.
    -> execute_plan with set_business_info
 
 6. TAX CLASSES — Use YOUR KNOWLEDGE of the country's tax system.
-   Do NOT depend on blueprint tax data. You know the tax rates:
-   - Spain: IVA General 21%, Reducido 10%, Superreducido 4%
-   - Germany: MwSt 19%, Ermaessigt 7%
-   - France: TVA 20%, Reduit 10%, Super-reduit 5.5%, Particulier 2.1%
-   - Italy: IVA 22%, Ridotta 10%, Super-ridotta 4%
-   - Portugal: IVA 23%, Intermedia 13%, Reduzida 6%
-   - UK: VAT 20%, Reduced 5%, Zero 0%
-   - USA: varies by state (ask user)
-   - Mexico: IVA 16%
+   Based on the country_code already set, you know the tax rates for every country.
+   For countries with state/regional variation (USA, Canada, etc.), ask the user.
    Present to user: "Your country has these tax rates: [list]. Add them all?"
    -> execute_plan with create_tax_class steps
 

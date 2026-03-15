@@ -145,6 +145,159 @@ class SetupBusiness(AssistantTool):
 
 
 @register_tool
+class CreateEmployee(AssistantTool):
+    """Create a single employee."""
+
+    name = "create_employee"
+    description = (
+        "Create a single employee with name, role, PIN, and optional email. "
+        "For creating multiple employees at once, use bulk_create_employees instead."
+    )
+    requires_confirmation = True
+    required_permission = 'accounts.add_localuser'
+    strict = False  # LLM sends name under various keys
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Full name of the employee. Required."},
+            "role_name": {"type": "string", "description": "Role name (e.g., 'admin', 'manager', 'employee'). Default 'employee'."},
+            "pin": {"type": "string", "description": "4-digit PIN code for login."},
+            "email": {"type": "string", "description": "Email address. Optional."},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from apps.accounts.models import LocalUser, Role
+        import uuid as _uuid
+
+        hub_id = request.session.get('hub_id')
+
+        # Accept various param shapes the LLM might use
+        name = (
+            args.get('name') or args.get('full_name')
+            or args.get('employee_name') or args.get('nombre')
+            or args.get('display_name') or ''
+        )
+        if not name:
+            first = args.get('first_name', '')
+            last = args.get('last_name', '')
+            name = f"{first} {last}".strip()
+        if not name:
+            return {"error": "name is required for create_employee"}
+
+        # Check for existing
+        existing = LocalUser.objects.filter(hub_id=hub_id, name=name).first()
+        if existing:
+            return {"message": f"Employee '{name}' already exists", "employee_id": str(existing.id)}
+
+        role_name = args.get('role_name') or args.get('role') or 'employee'
+        role_obj = Role.objects.filter(
+            hub_id=hub_id, name__iexact=role_name, is_deleted=False,
+        ).first()
+        if not role_obj:
+            role_obj = Role.objects.filter(
+                hub_id=hub_id, display_name__iexact=role_name, is_deleted=False,
+            ).first()
+
+        # Determine legacy role field
+        legacy_role = 'employee'
+        role_lower = role_name.lower()
+        if role_lower in ('admin', 'administrator', 'directora', 'director', 'gerente'):
+            legacy_role = 'admin'
+        elif role_lower in ('manager', 'encargado', 'encargada', 'jefe de sala', 'jefa de sala'):
+            legacy_role = 'manager'
+        elif role_lower in ('viewer', 'visor', 'observador'):
+            legacy_role = 'viewer'
+
+        email = args.get('email', '')
+        if not email:
+            email = f"{_uuid.uuid4().hex[:8]}@placeholder.local"
+
+        user = LocalUser(
+            hub_id=hub_id,
+            name=name,
+            email=email,
+            role=legacy_role,
+            role_obj=role_obj,
+            is_active=True,
+        )
+        pin = args.get('pin') or args.get('pin_code')
+        if pin:
+            user.set_pin(str(pin))
+        user.save()
+        return {"employee_id": str(user.id), "name": user.name, "created": True}
+
+
+@register_tool
+class CreateRole(AssistantTool):
+    """Create a custom role with permission wildcards."""
+
+    name = "create_role"
+    description = (
+        "Create a custom role with permission wildcards. "
+        "Use this when the business needs roles beyond the default ones (admin, manager, employee, viewer)."
+    )
+    requires_confirmation = True
+    required_permission = 'accounts.add_role'
+    strict = False  # LLM sends name under various keys
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Role name (e.g., 'chef', 'recepcionista'). Required."},
+            "display_name": {"type": "string", "description": "Display name. Defaults to name."},
+            "description": {"type": "string", "description": "Optional description."},
+            "wildcards": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Permission wildcards (e.g., ['sales.*', 'inventory.view_*']).",
+            },
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from apps.accounts.models import Role, RolePermission
+        hub_id = request.session.get('hub_id')
+
+        name = (
+            args.get('name') or args.get('role_name')
+            or args.get('title') or args.get('label')
+        )
+        if not name:
+            return {"error": "Missing 'name' for create_role"}
+
+        existing = Role.objects.filter(
+            hub_id=hub_id, name=name, is_deleted=False,
+        ).first()
+        if existing:
+            return {"message": f"Role '{name}' already exists", "role_id": str(existing.id)}
+
+        wildcards = (
+            args.get('wildcards') or args.get('permissions')
+            or args.get('permission_wildcards') or []
+        )
+
+        role = Role.objects.create(
+            hub_id=hub_id,
+            name=name,
+            display_name=args.get('display_name', name),
+            description=args.get('description', ''),
+            source='custom',
+            is_system=False,
+        )
+        for wildcard in wildcards:
+            RolePermission.objects.create(
+                hub_id=hub_id,
+                role=role,
+                wildcard=wildcard,
+            )
+        return {"role_id": str(role.id), "name": role.name, "created": True}
+
+
+@register_tool
 class BulkCreateEmployees(AssistantTool):
     """Create multiple employees in one call."""
 

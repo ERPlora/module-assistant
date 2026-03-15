@@ -168,7 +168,7 @@ class ExecutePlan(AssistantTool):
             action = step.get('action', '')
             params = step.get('params') or {}
             # Fallback: if LLM omitted 'params' but put fields at step top level,
-            # extract them as params (gpt-4o-mini often drops the params wrapper).
+            # extract them as params (LLM sometimes drops the params wrapper).
             if not params:
                 _step_schema_keys = {'action', 'params', 'description', 'rollback_action', 'rollback_params'}
                 extra = {k: v for k, v in step.items() if k not in _step_schema_keys}
@@ -343,33 +343,12 @@ class ExecutePlan(AssistantTool):
         return ' '.join(parts)
 
     def _execute_step(self, action, params, request, description=''):
-        """Execute a single plan step."""
-        dispatch = {
-            'set_regional_config': self._set_regional_config,
-            'set_business_info': self._set_business_info,
-            'set_tax_config': self._set_tax_config,
-            'enable_module': self._enable_module,
-            'disable_module': self._disable_module,
-            'create_role': lambda p: self._create_role(p, request),
-            'create_employee': lambda p: self._create_employee(p, request),
-            'create_tax_class': self._create_tax_class,
-            'update_store_config': self._update_store_config,
-            'complete_setup': lambda p: self._complete_setup(),
-            'create_category': self._create_category,
-            'create_product': self._create_product,
-            'create_service_category': self._create_service_category,
-            'create_service': self._create_service,
-            'create_payment_method': self._create_payment_method,
-            'set_business_hours': self._set_business_hours,
-            'create_zone': self._create_zone,
-            'create_table': lambda p: self._create_table(p, description),
-            'bulk_create_zones': self._bulk_create_zones,
-            'bulk_create_tables': lambda p: self._bulk_create_tables(p, description),
-            'bulk_set_business_hours': self._set_business_hours,
-            'install_blueprint': lambda p: self._install_blueprint(p, request),
-            'install_blueprint_products': self._install_blueprint_products,
-            'create_station': self._create_station,
-        }
+        """Execute a single plan step by delegating to TOOL_REGISTRY.
+
+        Hub core actions (settings, tax, modules) are handled inline.
+        All module-specific actions delegate to the module's registered tool.
+        """
+        from assistant.tools import get_tool
 
         # Common LLM aliases
         aliases = {
@@ -390,11 +369,31 @@ class ExecutePlan(AssistantTool):
         if list(params.keys()) == ['parameters'] and isinstance(params.get('parameters'), dict):
             params = params['parameters']
 
-        handler = dispatch.get(action)
-        if handler is None:
-            raise ValueError(f"Unknown action: {action}")
         logger.info("[ASSISTANT] Executing action=%s params=%s", action, params)
-        return handler(params)
+
+        # Hub core actions — these are NOT module tools, they live in configure_tools
+        core_dispatch = {
+            'set_regional_config': self._set_regional_config,
+            'set_business_info': self._set_business_info,
+            'set_tax_config': self._set_tax_config,
+            'enable_module': self._enable_module,
+            'disable_module': self._disable_module,
+            'create_tax_class': self._create_tax_class,
+            'update_store_config': self._update_store_config,
+            'complete_setup': lambda p: self._complete_setup(),
+            'install_blueprint': lambda p: self._install_blueprint(p, request),
+        }
+
+        handler = core_dispatch.get(action)
+        if handler is not None:
+            return handler(params)
+
+        # Everything else → delegate to module tools via TOOL_REGISTRY
+        tool = get_tool(action)
+        if tool is not None:
+            return tool.safe_execute(params, request)
+
+        raise ValueError(f"Unknown action: {action}. No core handler or registered tool found.")
 
     # ── Param recovery helpers ────────────────────────────────────
 
@@ -541,102 +540,6 @@ class ExecutePlan(AssistantTool):
             return {"message": f"Module {module_id} disabled"}
         return {"message": f"Module {module_id} not found"}
 
-    # ── Roles & Employees ──────────────────────────────────────────
-
-    def _create_role(self, params, request):
-        from apps.accounts.models import Role, RolePermission
-        hub_id = request.session.get('hub_id')
-
-        # LLM sends name under various keys
-        name = (
-            params.get('name')
-            or params.get('role_name')
-            or params.get('title')
-            or params.get('label')
-        )
-        if not name:
-            raise ValueError("Missing 'name' for create_role")
-
-        existing = Role.objects.filter(
-            hub_id=hub_id, name=name, is_deleted=False,
-        ).first()
-        if existing:
-            return {"message": f"Role '{name}' already exists", "role_id": str(existing.id)}
-
-        # LLM sends permissions under various keys
-        wildcards = (
-            params.get('wildcards')
-            or params.get('permissions')
-            or params.get('permission_wildcards')
-            or []
-        )
-
-        role = Role.objects.create(
-            hub_id=hub_id,
-            name=name,
-            display_name=params.get('display_name', name),
-            description=params.get('description', ''),
-            source='custom',
-            is_system=False,
-        )
-        for wildcard in wildcards:
-            RolePermission.objects.create(
-                hub_id=hub_id,
-                role=role,
-                wildcard=wildcard,
-            )
-        return {"role_id": str(role.id), "name": role.name}
-
-    def _create_employee(self, params, request):
-        from apps.accounts.models import LocalUser, Role
-        hub_id = request.session.get('hub_id')
-
-        # Accept various param shapes the LLM might use
-        name = params.get('name', '')
-        if not name:
-            first = params.get('first_name', '')
-            last = params.get('last_name', '')
-            name = f"{first} {last}".strip()
-        if not name:
-            name = params.get('full_name') or params.get('employee_name') or ''
-        if not name:
-            # Last resort: look for any string value that could be a name
-            for key in ('nombre', 'display_name', 'title'):
-                if params.get(key):
-                    name = params[key]
-                    break
-        if not name:
-            raise ValueError(f"name is required for create_employee (received params: {list(params.keys())})")
-
-        # Check for existing employee by name to avoid duplicates
-        existing = LocalUser.objects.filter(hub_id=hub_id, name=name).first()
-        if existing:
-            return {"message": f"Employee '{name}' already exists", "employee_id": str(existing.id), "name": existing.name}
-
-        role_name = params.get('role_name') or params.get('role') or 'employee'
-        role_obj = Role.objects.filter(
-            hub_id=hub_id, name=role_name, is_deleted=False,
-        ).first()
-
-        import uuid as _uuid
-        email = params.get('email', '')
-        if not email:
-            # Generate unique placeholder to avoid unique constraint on (hub_id, email)
-            email = f"{_uuid.uuid4().hex[:8]}@placeholder.local"
-
-        user = LocalUser(
-            hub_id=hub_id,
-            name=name,
-            email=email,
-            role=role_name,
-            role_obj=role_obj,
-        )
-        pin = params.get('pin') or params.get('pin_code')
-        if pin:
-            user.set_pin(str(pin))
-        user.save()
-        return {"employee_id": str(user.id), "name": user.name}
-
     # ── Tax ────────────────────────────────────────────────────────
 
     def _create_tax_class(self, params):
@@ -750,443 +653,23 @@ class ExecutePlan(AssistantTool):
             "result": result,
         }
 
-    def _install_blueprint_products(self, params):
-        """Install products from blueprint catalog into inventory."""
-        from assistant.tools import TOOL_REGISTRY
-        tool = TOOL_REGISTRY.get('install_blueprint_products')
-        if not tool:
-            raise ValueError("install_blueprint_products tool not loaded")
-        # Build args matching the tool's parameter schema
-        args = {
-            'product_codes': params.get('product_codes', ['*']),
-        }
-        if params.get('business_type'):
-            args['business_type'] = params['business_type']
-        return tool.execute(args, None)
-
-    # ── Inventory: Categories & Products ───────────────────────────
-
-    def _create_category(self, params):
-        from inventory.models import Category
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Category name is required")
-
-        existing = Category.objects.filter(name__iexact=name).first()
-        if existing:
-            return {"message": f"Category '{name}' already exists", "id": str(existing.id)}
-
-        cat = Category.objects.create(
-            name=name,
-            description=params.get('description', ''),
-            icon=params.get('icon', 'cube-outline'),
-            color=params.get('color', '#3880ff'),
-            is_active=True,
-        )
-        return {"id": str(cat.id), "name": cat.name, "created": True}
-
-    def _create_product(self, params):
-        from inventory.models import Product, Category
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Product name is required")
-
-        price = params.get('price', 0)
-        sku = params.get('sku', '')
-
-        product = Product(
-            name=name,
-            sku=sku,
-            price=price,
-            cost=params.get('cost', 0),
-            description=params.get('description', ''),
-            stock=params.get('stock', 0),
-            product_type=params.get('product_type', 'physical'),
-            is_active=True,
-        )
-        product.save()
-
-        category_names = params.get('categories', [])
-        if category_names:
-            matched_cats = []
-            for cat_name in category_names:
-                cat = Category.objects.filter(name__iexact=cat_name).first()
-                if cat:
-                    matched_cats.append(cat)
-            if matched_cats:
-                product.categories.set(matched_cats)
-
-        return {"id": str(product.id), "name": product.name, "sku": product.sku, "created": True}
-
-    # ── Services: Categories & Services ────────────────────────────
-
-    def _create_service_category(self, params):
-        from django.utils.text import slugify
-        from services.models import ServiceCategory
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Service category name is required")
-
-        slug = slugify(name)
-        existing = ServiceCategory.objects.filter(slug=slug).first()
-        if existing:
-            return {"message": f"Service category '{name}' already exists", "id": str(existing.id)}
-
-        cat = ServiceCategory.objects.create(
-            name=name,
-            slug=slug,
-            description=params.get('description', ''),
-            icon=params.get('icon', ''),
-            color=params.get('color', ''),
-            is_active=True,
-        )
-        return {"id": str(cat.id), "name": cat.name, "created": True}
-
-    def _create_service(self, params):
-        from django.utils.text import slugify
-        from services.models import Service, ServiceCategory
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Service name is required")
-
-        slug = slugify(name)
-        existing = Service.objects.filter(slug=slug).first()
-        if existing:
-            return {"message": f"Service '{name}' already exists", "id": str(existing.id)}
-
-        category = None
-        cat_name = params.get('category')
-        if cat_name:
-            category = ServiceCategory.objects.filter(name__iexact=cat_name).first()
-
-        duration = (
-            params.get('duration_minutes')
-            or params.get('duration')
-            or params.get('duration_min')
-            or 60
-        )
-        svc = Service.objects.create(
-            name=name,
-            slug=slug,
-            price=params.get('price', 0),
-            duration_minutes=int(duration),
-            pricing_type=params.get('pricing_type', 'fixed'),
-            description=params.get('description', ''),
-            category=category,
-            is_bookable=params.get('is_bookable', True),
-            is_active=True,
-        )
-        return {"id": str(svc.id), "name": svc.name, "created": True}
-
-    # ── Sales: Payment Methods ─────────────────────────────────────
-
-    def _create_payment_method(self, params):
-        from sales.models import PaymentMethod
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Payment method name is required")
-
-        existing = PaymentMethod.objects.filter(name__iexact=name).first()
-        if existing:
-            return {"message": f"Payment method '{name}' already exists", "id": str(existing.id)}
-
-        pm = PaymentMethod.objects.create(
-            name=name,
-            type=params.get('payment_type', params.get('type', 'other')),
-            is_active=True,
-        )
-        return {"id": str(pm.id), "name": pm.name, "created": True}
-
-    # ── Schedules: Business Hours ──────────────────────────────────
-
-    def _set_business_hours(self, params):
-        from datetime import time
-        from schedules.models import BusinessHours
-        hours_list = params.get('hours', [])
-        if not hours_list and 'day_of_week' in params:
-            hours_list = [params]
-        if not hours_list:
-            raise ValueError("'hours' array is required, or provide 'day_of_week' for a single day")
-
-        updated = []
-        for h in hours_list:
-            day = h.get('day_of_week')
-            if day is None:
-                continue
-            is_closed = h.get('is_closed', False)
-            defaults = {
-                'is_closed': is_closed,
-                'open_time': h.get('open_time', time(9, 0)),
-                'close_time': h.get('close_time', time(18, 0)),
-            }
-            if 'break_start' in h:
-                defaults['break_start'] = h['break_start']
-            if 'break_end' in h:
-                defaults['break_end'] = h['break_end']
-
-            bh, created = BusinessHours.objects.update_or_create(
-                day_of_week=day,
-                defaults=defaults,
-            )
-            updated.append(day)
-        return {"updated_days": updated, "success": True}
-
-    # ── Tables (Hospitality) ───────────────────────────────────────
-
-    def _create_zone(self, params):
-        from tables.models import Zone
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Zone name is required")
-
-        existing = Zone.objects.filter(name__iexact=name).first()
-        if existing:
-            return {"message": f"Zone '{name}' already exists", "id": str(existing.id)}
-
-        zone = Zone.objects.create(
-            name=name,
-            description=params.get('description', ''),
-            color=params.get('color', '#3880ff'),
-            is_active=True,
-        )
-        return {"id": str(zone.id), "name": zone.name, "created": True}
-
-    def _resolve_zone(self, params, description=''):
-        """Resolve zone from params (various keys/formats) or step description.
-
-        Handles LLM inconsistencies:
-        - Key aliases: zone, zone_name, zone_id, area
-        - Value as zone name string → lookup by name
-        - Value as integer/UUID → lookup by pk
-        - Fallback: parse zone name from step description
-        """
-        from tables.models import Zone
-
-        # Try multiple param keys the LLM might use
-        zone_val = None
-        for key in ('zone', 'zone_name', 'zone_id', 'area'):
-            val = params.get(key)
-            if val is not None and val != '':
-                zone_val = val
-                break
-
-        if zone_val is None and description:
-            # Last resort: extract zone from description text
-            # Patterns like "in zone 'Terraza'", "zona Terraza", "for area Terraza"
-            import re
-            match = (
-                re.search(r"(?:zone|zona|area)\s+['\"]([^'\"]+)['\"]", description, re.IGNORECASE)
-                or re.search(r"(?:zone|zona|area)\s+(\S+)", description, re.IGNORECASE)
-            )
-            if match:
-                zone_val = match.group(1).strip()
-
-        if not zone_val:
-            return None
-
-        # If it looks like an integer ID, try pk lookup first
-        if isinstance(zone_val, int) or (isinstance(zone_val, str) and zone_val.isdigit()):
-            zone = Zone.objects.filter(pk=int(zone_val)).first()
-            if zone:
-                return zone
-
-        # Name-based lookup (case-insensitive)
-        if isinstance(zone_val, str):
-            zone = Zone.objects.filter(name__iexact=zone_val).first()
-            if zone:
-                return zone
-            # Partial match fallback (e.g. "Terraza" matches "Terraza exterior")
-            zone = Zone.objects.filter(name__icontains=zone_val).first()
-            if zone:
-                return zone
-
-        return None
-
-    def _create_table(self, params, description=''):
-        from tables.models import Table
-        number = params.get('number') or params.get('name') or params.get('table_number')
-        if number is None:
-            # Auto-generate next table number
-            max_num = 0
-            for t in Table.objects.values_list('number', flat=True):
-                try:
-                    n = int(''.join(c for c in t if c.isdigit()) or '0')
-                    max_num = max(max_num, n)
-                except ValueError:
-                    pass
-            number = str(max_num + 1)
-
-        zone = self._resolve_zone(params, description)
-
-        existing = Table.objects.filter(number=number).first()
-        if existing:
-            return {"message": f"Table {number} already exists", "id": str(existing.id)}
-
-        table = Table.objects.create(
-            number=number,
-            zone=zone,
-            capacity=params.get('capacity', 4),
-            shape=params.get('shape', 'square'),
-            is_active=True,
-        )
-        return {"id": str(table.id), "number": table.number, "created": True}
-
-    def _bulk_create_zones(self, params):
-        """Create multiple zones at once. params: {zones: [{name, description?, color?, tables?: [{name, capacity?}]}]} or {zones: ["name1", "name2"]}"""
-        zones_data = params.get('zones', [])
-        if not zones_data:
-            raise ValueError("No zones provided")
-        results = []
-        tables_created = 0
-        for z in zones_data:
-            # Accept both string and dict format
-            if isinstance(z, str):
-                z = {'name': z}
-            zone_result = self._create_zone(z)
-            # If zone has tables, create them too
-            tables_data = z.get('tables', [])
-            if tables_data and zone_result.get('id'):
-                zone_id = zone_result['id']
-                zone_name = z.get('name', '')
-                created_tables = []
-                for t in tables_data:
-                    if isinstance(t, str):
-                        t = {'name': t}
-                    # Set zone for the table
-                    t['zone'] = zone_name
-                    table_result = self._create_table(t)
-                    created_tables.append(table_result)
-                    if table_result.get('created'):
-                        tables_created += 1
-                zone_result['tables'] = created_tables
-            results.append(zone_result)
-        return {"created": len([r for r in results if r.get('created')]), "results": results, "tables_created": tables_created}
-
-    def _bulk_create_tables(self, params, description=''):
-        """Create multiple tables at once.
-        Supports three formats:
-        1. {tables: [{number, zone?, capacity?, shape?}]}
-        2. {count: N, start_number?: 1, prefix?: '', zone?: 'name', capacity?: 4, shape?: 'square'}
-        3. {zones: [{zone: 'name', tables: [{name, capacity?}]}, ...]}  (per-zone tables)
-
-        Zone resolution: top-level zone is propagated to individual tables that
-        don't specify their own zone. Accepts zone, zone_name, zone_id, area.
-        """
-        # Support zones-based format: flatten per-zone tables into a single list
-        zones_data = params.get('zones', [])
-        if zones_data and isinstance(zones_data, list):
-            flat_tables = []
-            for z in zones_data:
-                if isinstance(z, dict):
-                    zone_name = z.get('zone') or z.get('zone_name') or z.get('name', '')
-                    for t in z.get('tables', []):
-                        if isinstance(t, str):
-                            t = {'name': t}
-                        t['zone'] = zone_name
-                        flat_tables.append(t)
-            if flat_tables:
-                params['tables'] = flat_tables
-
-        # Resolve top-level zone (from params or description) to propagate to tables
-        top_zone_name = None
-        for key in ('zone', 'zone_name', 'zone_id', 'area'):
-            val = params.get(key)
-            if val is not None and val != '':
-                top_zone_name = val
-                break
-
-        tables_data = params.get('tables', [])
-        # If tables is an integer, treat it as count
-        if isinstance(tables_data, (int, float)):
-            params['count'] = int(tables_data)
-            tables_data = []
-
-        # Expand items that have a 'count' field into individual tables
-        # e.g. {"zone": "Terraza", "count": 8, "capacity": 4} → 8 individual table dicts
-        # Numbers are NOT assigned here — the auto-numbering block below handles
-        # unique sequential numbering to avoid duplicates across zones.
-        if tables_data and isinstance(tables_data, list):
-            expanded = []
-            for t in tables_data:
-                if isinstance(t, dict) and t.get('count') and int(t['count']) > 1:
-                    count = int(t['count'])
-                    zone = t.get('zone') or t.get('zone_name') or t.get('area', '')
-                    capacity = t.get('capacity', 4)
-                    shape = t.get('shape', 'square')
-                    for i in range(count):
-                        expanded.append({
-                            'capacity': capacity,
-                            'shape': shape,
-                            'zone': zone,
-                        })
-                else:
-                    expanded.append(t)
-            tables_data = expanded
-
-        if not tables_data:
-            # Support count-based format with aliases
-            count = (params.get('count') or params.get('num_tables')
-                     or params.get('number_of_tables') or params.get('total')
-                     or params.get('quantity') or params.get('num')
-                     or params.get('amount') or params.get('table_count') or 0)
-            count = int(count) if count else 0
-            if count > 0:
-                start = params.get('start_number', 1)
-                prefix = params.get('prefix', '')
-                capacity = params.get('capacity', 4)
-                shape = params.get('shape', 'square')
-                tables_data = [
-                    {'number': f"{prefix}{start + i}", 'capacity': capacity, 'shape': shape}
-                    for i in range(count)
-                ]
-                # Zone will be propagated below
-            else:
-                raise ValueError("No tables provided. Use {tables: [...]} or {count: N, zone: 'name'}")
-
-        # Auto-number tables that are missing a number field
-        from tables.models import Table as _Table
-        max_num = 0
-        for tn in _Table.objects.values_list('number', flat=True):
-            try:
-                n = int(''.join(c for c in tn if c.isdigit()) or '0')
-                max_num = max(max_num, n)
-            except ValueError:
-                pass
-        prefix = params.get('prefix', '')
-        for idx, t in enumerate(tables_data):
-            if not t.get('number') and not t.get('name'):
-                max_num += 1
-                t['number'] = f"{prefix}{max_num}"
-
-        # Propagate top-level zone to individual tables that don't have their own
-        if top_zone_name:
-            for t in tables_data:
-                has_zone = any(t.get(k) for k in ('zone', 'zone_name', 'zone_id', 'area'))
-                if not has_zone:
-                    t['zone'] = top_zone_name
-
-        results = []
-        for t in tables_data:
-            results.append(self._create_table(t, description))
-        return {"created": len([r for r in results if r.get('created')]), "results": results}
-
-    # ── Kitchen Stations ───────────────────────────────────────────
-
-    def _create_station(self, params):
-        from orders.models import KitchenStation
-        name = params.get('name', '')
-        if not name:
-            raise ValueError("Station name is required")
-
-        existing = KitchenStation.objects.filter(name__iexact=name).first()
-        if existing:
-            return {"message": f"Station '{name}' already exists", "id": str(existing.id)}
-
-        station = KitchenStation.objects.create(
-            name=name,
-            description=params.get('description', ''),
-            color=params.get('color', '#F97316'),
-            icon=params.get('icon', 'flame-outline'),
-            is_active=True,
-        )
-        return {"id": str(station.id), "name": station.name, "created": True}
+    # ── Module-specific actions (DELEGATED to module ai_tools) ──
+    # All module-specific actions are now handled by _execute_step's
+    # TOOL_REGISTRY delegation. The following are delegated:
+    #
+    # create_role → setup_tools.py:CreateRole
+    # create_employee → setup_tools.py:CreateEmployee
+    # bulk_create_employees → setup_tools.py:BulkCreateEmployees
+    # create_zone → tables/ai_tools.py:CreateZone
+    # create_table → tables/ai_tools.py:CreateTable
+    # bulk_create_zones → tables/ai_tools.py:BulkCreateZones
+    # bulk_create_tables → tables/ai_tools.py:BulkCreateTables
+    # create_category → inventory/ai_tools.py:CreateCategory
+    # create_product → inventory/ai_tools.py:CreateProduct
+    # create_service_category → services/ai_tools.py:CreateServiceCategory
+    # create_service → services/ai_tools.py:CreateService
+    # create_payment_method → sales/ai_tools.py:CreatePaymentMethod
+    # set_business_hours → schedules/ai_tools.py:SetBusinessHours
+    # bulk_set_business_hours → schedules/ai_tools.py:BulkSetBusinessHours
+    # create_station → kitchen/ai_tools.py:CreateStation
+    # install_blueprint_products → blueprint_tools.py:InstallBlueprintProducts
