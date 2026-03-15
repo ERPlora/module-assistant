@@ -493,8 +493,14 @@ class ExecutePlan(AssistantTool):
     def _set_tax_config(self, params):
         from apps.configuration.models import StoreConfig
         store = StoreConfig.get_solo()
-        if 'tax_rate' in params:
-            store.tax_rate = params['tax_rate']
+        # Accept multiple key names for tax rate
+        tax_rate = None
+        for key in ('tax_rate', 'default_tax_rate', 'rate', 'percentage', 'tax_percentage', 'rate_percent', 'default_rate'):
+            if key in params:
+                tax_rate = params[key]
+                break
+        if tax_rate is not None:
+            store.tax_rate = tax_rate
         if 'tax_included' in params:
             store.tax_included = params['tax_included']
         store.is_configured = True
@@ -1026,17 +1032,35 @@ class ExecutePlan(AssistantTool):
         return {"id": str(table.id), "number": table.number, "created": True}
 
     def _bulk_create_zones(self, params):
-        """Create multiple zones at once. params: {zones: [{name, description?, color?}]} or {zones: ["name1", "name2"]}"""
+        """Create multiple zones at once. params: {zones: [{name, description?, color?, tables?: [{name, capacity?}]}]} or {zones: ["name1", "name2"]}"""
         zones_data = params.get('zones', [])
         if not zones_data:
             raise ValueError("No zones provided")
         results = []
+        tables_created = 0
         for z in zones_data:
             # Accept both string and dict format
             if isinstance(z, str):
                 z = {'name': z}
-            results.append(self._create_zone(z))
-        return {"created": len([r for r in results if r.get('created')]), "results": results}
+            zone_result = self._create_zone(z)
+            # If zone has tables, create them too
+            tables_data = z.get('tables', [])
+            if tables_data and zone_result.get('id'):
+                zone_id = zone_result['id']
+                zone_name = z.get('name', '')
+                created_tables = []
+                for t in tables_data:
+                    if isinstance(t, str):
+                        t = {'name': t}
+                    # Set zone for the table
+                    t['zone'] = zone_name
+                    table_result = self._create_table(t)
+                    created_tables.append(table_result)
+                    if table_result.get('created'):
+                        tables_created += 1
+                zone_result['tables'] = created_tables
+            results.append(zone_result)
+        return {"created": len([r for r in results if r.get('created')]), "results": results, "tables_created": tables_created}
 
     def _bulk_create_tables(self, params, description=''):
         """Create multiple tables at once.
