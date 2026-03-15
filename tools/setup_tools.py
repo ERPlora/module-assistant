@@ -169,7 +169,7 @@ class BulkCreateEmployees(AssistantTool):
                         "last_name": {"type": "string", "description": "Last name"},
                         "role": {
                             "type": "string",
-                            "description": "Role slug (e.g., 'admin', 'manager', 'employee', 'viewer')",
+                            "description": "Role name (e.g., 'admin', 'manager', 'employee', 'viewer')",
                         },
                         "pin": {
                             "type": "string",
@@ -217,9 +217,9 @@ class BulkCreateEmployees(AssistantTool):
                     hub_id=hub_id, name__iexact=role_name, is_deleted=False,
                 ).first()
                 if not role_obj:
-                    # Try slug match
+                    # Try display_name match
                     role_obj = Role.objects.filter(
-                        hub_id=hub_id, slug__iexact=role_name, is_deleted=False,
+                        hub_id=hub_id, display_name__iexact=role_name, is_deleted=False,
                     ).first()
 
                 # Determine legacy role field value
