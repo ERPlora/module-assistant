@@ -56,6 +56,8 @@ class ExecutePlan(AssistantTool):
         "create_payment_method, set_business_hours, create_zone, create_table, "
         "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint, "
         "install_blueprint_products, create_station. "
+        "IMPORTANT: create_tax_class REQUIRES 'rate' (number) in params. "
+        "Example: {\"action\": \"create_tax_class\", \"params\": {\"name\": \"IVA General\", \"rate\": 21.0, \"is_default\": true}}. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
         "Always include 'categories' when creating products so they are properly categorized. "
         "Create categories first (create_category), then reference them by name in create_product. "
@@ -636,9 +638,17 @@ class ExecutePlan(AssistantTool):
 
         name = (params.get('name') or params.get('tax_name') or
                 params.get('label') or params.get('title'))
-        rate = params.get('rate') or params.get('tax_rate') or params.get('percentage')
+        # Accept rate from multiple param names — AI often uses different keys
+        rate = None
+        for key in ('rate', 'tax_rate', 'percentage', 'value', 'tax_percentage'):
+            if key in params and params[key] is not None:
+                rate = params[key]
+                break
         if rate is None:
-            raise ValueError("Tax rate is required")
+            raise ValueError(
+                f"Tax rate is required. Provide 'rate' in params. "
+                f"Received params: {list(params.keys())}"
+            )
         rate = float(rate)
         if not name:
             name = f"Tax {rate}%"
