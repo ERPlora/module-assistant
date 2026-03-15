@@ -587,14 +587,16 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                                 loaded_modules.add(mid)
                             tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
                             request.session['assistant_loaded_modules'] = list(loaded_modules)
-                            request.session.modified = True
+                            if hasattr(request.session, 'modified'):
+                                request.session.modified = True
                         # Unload: when unload_module_tools is called, remove from session
                         elif tool_name == 'unload_module_tools' and isinstance(result, dict) and 'error' not in result:
                             for mid in result.get('unloaded', tool_args.get('modules', [])):
                                 loaded_modules.discard(mid)
                             tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
                             request.session['assistant_loaded_modules'] = list(loaded_modules)
-                            request.session.modified = True
+                            if hasattr(request.session, 'modified'):
+                                request.session.modified = True
 
                         is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
                         action_log = AssistantActionLog.objects.create(

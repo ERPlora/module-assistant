@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def _consume_post_install(request):
     """Read and clear the post-install session flag set before server restart."""
     data = request.session.pop('assistant_post_install', None)
-    if data:
+    if data and hasattr(request.session, 'modified'):
         request.session.modified = True
     return data
 
