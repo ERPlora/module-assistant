@@ -1100,6 +1100,30 @@ class ExecutePlan(AssistantTool):
         if isinstance(tables_data, (int, float)):
             params['count'] = int(tables_data)
             tables_data = []
+
+        # Expand items that have a 'count' field into individual tables
+        # e.g. {"zone": "Terraza", "count": 8, "capacity": 4} → 8 individual table dicts
+        if tables_data and isinstance(tables_data, list):
+            expanded = []
+            for t in tables_data:
+                if isinstance(t, dict) and t.get('count') and int(t['count']) > 1:
+                    count = int(t['count'])
+                    zone = t.get('zone') or t.get('zone_name') or t.get('area', '')
+                    capacity = t.get('capacity', 4)
+                    shape = t.get('shape', 'square')
+                    prefix = t.get('prefix', '')
+                    start = int(t.get('start_number', 1))
+                    for i in range(count):
+                        expanded.append({
+                            'number': f"{prefix}{start + i}",
+                            'capacity': capacity,
+                            'shape': shape,
+                            'zone': zone,
+                        })
+                else:
+                    expanded.append(t)
+            tables_data = expanded
+
         if not tables_data:
             # Support count-based format with aliases
             count = (params.get('count') or params.get('num_tables')
