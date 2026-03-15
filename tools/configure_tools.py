@@ -1103,6 +1103,8 @@ class ExecutePlan(AssistantTool):
 
         # Expand items that have a 'count' field into individual tables
         # e.g. {"zone": "Terraza", "count": 8, "capacity": 4} → 8 individual table dicts
+        # Numbers are NOT assigned here — the auto-numbering block below handles
+        # unique sequential numbering to avoid duplicates across zones.
         if tables_data and isinstance(tables_data, list):
             expanded = []
             for t in tables_data:
@@ -1111,11 +1113,8 @@ class ExecutePlan(AssistantTool):
                     zone = t.get('zone') or t.get('zone_name') or t.get('area', '')
                     capacity = t.get('capacity', 4)
                     shape = t.get('shape', 'square')
-                    prefix = t.get('prefix', '')
-                    start = int(t.get('start_number') or t.get('number') or 1)
                     for i in range(count):
                         expanded.append({
-                            'number': f"{prefix}{start + i}",
                             'capacity': capacity,
                             'shape': shape,
                             'zone': zone,
