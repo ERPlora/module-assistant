@@ -1064,13 +1064,29 @@ class ExecutePlan(AssistantTool):
 
     def _bulk_create_tables(self, params, description=''):
         """Create multiple tables at once.
-        Supports two formats:
+        Supports three formats:
         1. {tables: [{number, zone?, capacity?, shape?}]}
         2. {count: N, start_number?: 1, prefix?: '', zone?: 'name', capacity?: 4, shape?: 'square'}
+        3. {zones: [{zone: 'name', tables: [{name, capacity?}]}, ...]}  (per-zone tables)
 
         Zone resolution: top-level zone is propagated to individual tables that
         don't specify their own zone. Accepts zone, zone_name, zone_id, area.
         """
+        # Support zones-based format: flatten per-zone tables into a single list
+        zones_data = params.get('zones', [])
+        if zones_data and isinstance(zones_data, list):
+            flat_tables = []
+            for z in zones_data:
+                if isinstance(z, dict):
+                    zone_name = z.get('zone') or z.get('zone_name') or z.get('name', '')
+                    for t in z.get('tables', []):
+                        if isinstance(t, str):
+                            t = {'name': t}
+                        t['zone'] = zone_name
+                        flat_tables.append(t)
+            if flat_tables:
+                params['tables'] = flat_tables
+
         # Resolve top-level zone (from params or description) to propagate to tables
         top_zone_name = None
         for key in ('zone', 'zone_name', 'zone_id', 'area'):
