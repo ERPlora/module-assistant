@@ -268,6 +268,21 @@ class ExecutePlan(AssistantTool):
 
         success_count = sum(1 for r in results if r['success'])
 
+        # Auto-complete setup if plan succeeded and hub is not yet configured
+        if len(errors) == 0 and success_count > 0:
+            try:
+                from apps.configuration.models import HubConfig, StoreConfig
+                hub_config = HubConfig.get_solo()
+                store_config = StoreConfig.get_solo()
+                if not hub_config.is_configured or not store_config.is_configured:
+                    hub_config.is_configured = True
+                    hub_config.save(update_fields=['is_configured'])
+                    store_config.is_configured = True
+                    store_config.save(update_fields=['is_configured'])
+                    logger.info("[ASSISTANT] Auto-completed setup after successful plan execution")
+            except Exception as exc:
+                logger.warning("[ASSISTANT] Auto-complete setup failed: %s", exc)
+
         return {
             "success": len(errors) == 0,
             "total_steps": total,
