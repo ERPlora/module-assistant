@@ -1031,9 +1031,17 @@ class ExecutePlan(AssistantTool):
                 break
 
         tables_data = params.get('tables', [])
+        # If tables is an integer, treat it as count
+        if isinstance(tables_data, (int, float)):
+            params['count'] = int(tables_data)
+            tables_data = []
         if not tables_data:
-            # Support count-based format
-            count = params.get('count', 0)
+            # Support count-based format with aliases
+            count = (params.get('count') or params.get('num_tables')
+                     or params.get('number_of_tables') or params.get('total')
+                     or params.get('quantity') or params.get('num')
+                     or params.get('amount') or params.get('table_count') or 0)
+            count = int(count) if count else 0
             if count > 0:
                 start = params.get('start_number', 1)
                 prefix = params.get('prefix', '')
