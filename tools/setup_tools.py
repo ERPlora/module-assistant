@@ -7,6 +7,8 @@ All tools use strict=True for reliable structured output.
 """
 import logging
 
+from django.utils.text import slugify
+
 from assistant.tools import AssistantTool, register_tool
 
 logger = logging.getLogger(__name__)
@@ -339,6 +341,7 @@ class BulkCreateServices(AssistantTool):
             try:
                 category, _ = ServiceCategory.objects.get_or_create(
                     name=cat_data['name'],
+                    defaults={'slug': slugify(cat_data['name'])},
                 )
 
                 for svc_data in cat_data['services']:
@@ -355,6 +358,7 @@ class BulkCreateServices(AssistantTool):
                         name=svc_data['name'],
                         category=category,
                         defaults={
+                            'slug': slugify(svc_data['name']),
                             'duration_minutes': svc_data['duration_minutes'],
                             'price': price,
                             'description': svc_data.get('description', ''),
