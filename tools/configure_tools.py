@@ -964,9 +964,17 @@ class ExecutePlan(AssistantTool):
 
     def _create_table(self, params, description=''):
         from tables.models import Table
-        number = params.get('number') or params.get('name')
+        number = params.get('number') or params.get('name') or params.get('table_number')
         if number is None:
-            raise ValueError("Table number is required")
+            # Auto-generate next table number
+            max_num = 0
+            for t in Table.objects.values_list('number', flat=True):
+                try:
+                    n = int(''.join(c for c in t if c.isdigit()) or '0')
+                    max_num = max(max_num, n)
+                except ValueError:
+                    pass
+            number = str(max_num + 1)
 
         zone = self._resolve_zone(params, description)
 
@@ -1029,6 +1037,21 @@ class ExecutePlan(AssistantTool):
                 # Zone will be propagated below
             else:
                 raise ValueError("No tables provided. Use {tables: [...]} or {count: N, zone: 'name'}")
+
+        # Auto-number tables that are missing a number field
+        from tables.models import Table as _Table
+        max_num = 0
+        for tn in _Table.objects.values_list('number', flat=True):
+            try:
+                n = int(''.join(c for c in tn if c.isdigit()) or '0')
+                max_num = max(max_num, n)
+            except ValueError:
+                pass
+        prefix = params.get('prefix', '')
+        for idx, t in enumerate(tables_data):
+            if not t.get('number') and not t.get('name'):
+                max_num += 1
+                t['number'] = f"{prefix}{max_num}"
 
         # Propagate top-level zone to individual tables that don't have their own
         if top_zone_name:
