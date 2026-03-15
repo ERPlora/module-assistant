@@ -640,7 +640,7 @@ class ExecutePlan(AssistantTool):
                 params.get('label') or params.get('title'))
         # Accept rate from multiple param names — AI often uses different keys
         rate = None
-        for key in ('rate', 'tax_rate', 'percentage', 'value', 'tax_percentage'):
+        for key in ('rate', 'tax_rate', 'percentage', 'value', 'tax_percentage', 'rate_percent', 'tax_value', 'percent'):
             if key in params and params[key] is not None:
                 rate = params[key]
                 break
