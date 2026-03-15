@@ -1112,7 +1112,7 @@ class ExecutePlan(AssistantTool):
                     capacity = t.get('capacity', 4)
                     shape = t.get('shape', 'square')
                     prefix = t.get('prefix', '')
-                    start = int(t.get('start_number', 1))
+                    start = int(t.get('start_number') or t.get('number') or 1)
                     for i in range(count):
                         expanded.append({
                             'number': f"{prefix}{start + i}",
