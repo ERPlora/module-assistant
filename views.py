@@ -201,13 +201,16 @@ def chat_page(request):
     show_upgrade = tier_slug != 'enterprise'
     upgrade_url = f"{cloud_url}/dashboard/assistant/upgrade/" if show_upgrade else ''
 
+    # Always restore the most recent conversation so messages survive page reloads
+    active_conversation = restore_conversation or last_conversation
+
     return {
         'conversations': conversations,
-        'last_conversation': restore_conversation or last_conversation,
+        'last_conversation': active_conversation,
         'chat_context': context,
         'is_setup_mode': context == 'setup',
         'can_attach': can_attach,
-        'restore_conversation_id': restore_conversation.id if restore_conversation else None,
+        'restore_conversation_id': active_conversation.id if active_conversation else None,
         'tier_slug': tier_slug,
         'show_upgrade': show_upgrade,
         'upgrade_url': upgrade_url,
