@@ -503,6 +503,23 @@ class ExecutePlan(AssistantTool):
                     result['price'] = price_match.group(1)
                 return result
 
+        if action == 'create_product':
+            # "Martillo percutor 25€" or "Create product 'Silla plegable' price 5€"
+            name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+            if not name_match:
+                # Try everything before the price as the name
+                price_match = re.search(r'(\d+(?:[.,]\d+)?)\s*€', description)
+                if price_match:
+                    name = description[:price_match.start()].strip(' -–—:')
+                    if name:
+                        return {'name': name, 'price': price_match.group(1).replace(',', '.')}
+            else:
+                result = {'name': name_match.group(1).strip()}
+                price_match = re.search(r'(\d+(?:[.,]\d+)?)\s*€', description)
+                if price_match:
+                    result['price'] = price_match.group(1).replace(',', '.')
+                return result
+
         if action in ('import_seeds', 'import_products'):
             # "Import restaurant products" or "Importar productos de restaurante"
             from apps.configuration.models import HubConfig
