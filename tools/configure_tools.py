@@ -390,6 +390,12 @@ class ExecutePlan(AssistantTool):
 
         # Everything else → delegate to module tools via TOOL_REGISTRY
         tool = get_tool(action)
+        if tool is None:
+            # Tools may not be registered yet if modules were installed after
+            # initial discover_tools() ran. Force re-discovery and retry once.
+            from assistant.tools import discover_tools
+            discover_tools()
+            tool = get_tool(action)
         if tool is not None:
             return tool.safe_execute(params, request)
 
@@ -726,6 +732,11 @@ class ExecutePlan(AssistantTool):
         result = BlueprintService.install_blueprint(
             hub_config, type_codes, include_recommended=True,
         )
+
+        # Refresh tool registry so newly installed module tools are available
+        if result.get('modules_installed', 0) > 0:
+            from assistant.tools import discover_tools
+            discover_tools()
 
         # Save post-install state to session so the AI can continue after restart.
         if request is not None and result.get('modules_installed', 0) > 0:
