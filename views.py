@@ -350,6 +350,47 @@ def _set_progress(request_id, event_type, data=''):
         )
 
 
+def _get_post_restart_message(user_id):
+    """Build a user-friendly message when poll_progress finds empty cache (hub restarted).
+
+    Checks the last confirmed action to tell the user what happened instead of
+    the unhelpful "Request timed out. Please try again."
+    """
+    try:
+        last_action = AssistantActionLog.objects.filter(
+            user_id=user_id,
+            confirmed=True,
+        ).order_by('-created_at').first()
+
+        if last_action and last_action.tool_name == 'install_modules':
+            result = last_action.result or {}
+            installed = result.get('installed_count', 0)
+            if last_action.success and installed > 0:
+                return (
+                    f"✅ {installed} modules were installed successfully. "
+                    "The system restarted to load them. "
+                    "Please send a new message to continue where you left off."
+                )
+            elif result.get('errors'):
+                return (
+                    "Modules were partially installed. The system restarted to load them. "
+                    "Please send a new message to check the status."
+                )
+
+        if last_action and last_action.success:
+            return (
+                f"The system restarted after completing '{last_action.tool_name}'. "
+                "Your changes were saved. Please send a new message to continue."
+            )
+    except Exception:
+        pass
+
+    return (
+        "The system restarted while processing your request. "
+        "Your changes may have been saved. Please send a new message to continue."
+    )
+
+
 def run_agentic_loop(user, conversation, ai_input, context, request,
                      request_id=None):
     """
@@ -1017,7 +1058,7 @@ def chat_stream(request):
                     # (iter_lines strips them, so we add \n\n after each data line above)
 
         except http_requests.exceptions.Timeout:
-            yield f'data: {json.dumps({"type": "error", "message": "Request timed out. Please try again."})}\n\n'
+            yield f'data: {json.dumps({"type": "error", "message": "The request took too long. Please try again with a shorter message."})}\n\n'
             yield 'data: [DONE]\n\n'
         except Exception as e:
             logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
@@ -1045,11 +1086,13 @@ def poll_progress(request, request_id):
         if result:
             progress = {'type': 'complete', 'data': ''}
         else:
-            # Neither progress nor result — request expired or was lost. Stop polling.
+            # Neither progress nor result — likely hub restarted (LocMemCache wiped).
+            # Check the last confirmed action to give a meaningful message.
+            user_id = request.session.get('local_user_id')
+            message = _get_post_restart_message(user_id)
             return HttpResponse(render_to_string('assistant/partials/message.html', {
                 'role': 'system',
-                'content': 'Request timed out. Please try again.',
-                'error': True,
+                'content': message,
             }, request=request))
 
     if progress['type'] in ('complete', 'error'):
@@ -1203,6 +1246,12 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     )
                     cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
                     _set_progress(request_id, 'complete', '')
+
+                    # Schedule restart if install_modules flagged it
+                    if cache.get('assistant_restart_pending'):
+                        cache.delete('assistant_restart_pending')
+                        from apps.core.utils import schedule_server_restart
+                        schedule_server_restart(delay=5)
                 except AgenticLoopError as e:
                     cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
                     _set_progress(request_id, 'error', str(e))
@@ -1321,6 +1370,13 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
             )
             cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'complete', '')
+
+            # If install_modules flagged a restart, schedule it AFTER the
+            # result is stored so the frontend can retrieve it first.
+            if cache.get('assistant_restart_pending'):
+                cache.delete('assistant_restart_pending')
+                from apps.core.utils import schedule_server_restart
+                schedule_server_restart(delay=5)
         except AgenticLoopError as e:
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', str(e))

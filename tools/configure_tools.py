@@ -459,6 +459,7 @@ class ExecutePlan(AssistantTool):
 
         if action == 'create_tax_class':
             # "IVA General (21%)" or "Create tax class 'IVA Reducido' at 10%"
+            # Also handles: "Crear clase: IVA General", "Crear clase de IVA Exento"
             rate_match = re.search(r'(\d+(?:\.\d+)?)\s*%', description)
             if rate_match:
                 rate = float(rate_match.group(1))
@@ -472,6 +473,31 @@ class ExecutePlan(AssistantTool):
                     if not name or len(name) < 2:
                         name = f"Tax {rate}%"
                 return {'name': name, 'rate': rate}
+            # Fallback: known Spanish tax class names without % in description
+            _tax_map = {
+                'general': 21, 'reducido': 10, 'superreducido': 4, 'exento': 0,
+            }
+            desc_lower = description.lower()
+            for tax_name, tax_rate in _tax_map.items():
+                if tax_name in desc_lower:
+                    return {'name': f"IVA {tax_name.capitalize()}", 'rate': tax_rate}
+
+        if action == 'create_category':
+            # "Crear categoría 'Tabaco'" or "Create category 'Lotería' icon leaf-outline"
+            name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+            if name_match:
+                result = {'name': name_match.group(1).strip()}
+                icon_match = re.search(r"icon\s+['\"]?(\w[\w-]*)['\"]?", description, re.IGNORECASE)
+                if icon_match:
+                    result['icon'] = icon_match.group(1)
+                color_match = re.search(r"color\s+['\"]?(#[0-9a-fA-F]{6})['\"]?", description, re.IGNORECASE)
+                if color_match:
+                    result['color'] = color_match.group(1)
+                return result
+            # Fallback: use everything after "category" or "categoría" as the name
+            fallback = re.search(r"(?:category|categoría|categoria)\s+(.+)", description, re.IGNORECASE)
+            if fallback:
+                return {'name': fallback.group(1).strip().strip("'\"").strip()}
 
         if action in ('bulk_create_zones', 'create_zone'):
             # "Terraza" or "Create zone 'Terraza'"
@@ -668,6 +694,8 @@ class ExecutePlan(AssistantTool):
     # ── Tax ────────────────────────────────────────────────────────
 
     def _create_tax_class(self, params):
+        import re as _re
+        from decimal import Decimal
         from apps.configuration.models import TaxClass
 
         name = (params.get('name') or params.get('tax_name') or
@@ -683,18 +711,42 @@ class ExecutePlan(AssistantTool):
                 f"Tax rate is required. Provide 'rate' in params. "
                 f"Received params: {list(params.keys())}"
             )
-        rate = float(rate)
+        rate = Decimal(str(float(rate)))
+
+        # Clean name: strip common LLM prefixes like "Crear clase: ", "Crear clase de "
+        if name:
+            name = _re.sub(
+                r'^(?:crear?\s+)?(?:clase\s+(?:de\s+)?)?(?:iva\s+)?',
+                '', name, flags=_re.IGNORECASE,
+            ).strip(' :-(')
+            # Re-add "IVA " prefix for Spanish tax classes if it was stripped
+            if name and not name.upper().startswith('IVA'):
+                name = f"IVA {name}"
         if not name:
             name = f"Tax {rate}%"
 
-        if params.get('is_default'):
+        is_default = params.get('is_default', False)
+
+        # Duplicate check: skip if same name or same rate already exists
+        if TaxClass.objects.filter(name=name).exists():
+            existing = TaxClass.objects.get(name=name)
+            return {"tax_class_id": existing.id, "name": existing.name,
+                    "rate": str(existing.rate), "already_exists": True}
+        if TaxClass.objects.filter(rate=rate).exists():
+            existing = TaxClass.objects.filter(rate=rate).first()
+            return {"tax_class_id": existing.id, "name": existing.name,
+                    "rate": str(existing.rate), "already_exists": True}
+
+        if is_default:
             TaxClass.objects.filter(is_default=True).update(is_default=False)
 
+        order = TaxClass.objects.count() + 1
         tc = TaxClass.objects.create(
             name=name,
             rate=rate,
             description=params.get('description', ''),
-            is_default=params.get('is_default', False),
+            is_default=is_default,
+            order=order,
         )
         return {"tax_class_id": tc.id, "name": tc.name, "rate": str(tc.rate)}
 

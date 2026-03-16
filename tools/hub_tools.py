@@ -619,11 +619,17 @@ class InstallModules(AssistantTool):
                     logger.warning("[ASSISTANT] Failed to register modules with Cloud")
 
             return {
-                "message": f"Installed {result.installed} modules. Server restart scheduled.",
+                "message": (
+                    f"Installed {result.installed} modules. Server restart scheduled. "
+                    "IMPORTANT: The server will restart in a few seconds to load the new modules. "
+                    "Do NOT call any tools from the newly installed modules yet — they are not available until after the restart. "
+                    "Tell the user that the modules were installed and the system will restart shortly. "
+                    "The user should send a new message after the restart to continue setup."
+                ),
                 "installed_count": result.installed,
                 "already_installed": already,
                 "errors": result.errors if result.errors else [],
-                "requires_restart": result.installed > 0,
+                "requires_restart": True,
             }
         except Exception as e:
             logger.error(f"[ASSISTANT] Module install error: {e}", exc_info=True)

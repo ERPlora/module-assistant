@@ -397,10 +397,10 @@ class BulkCreateEmployees(AssistantTool):
                     role_obj=role_obj,
                     is_active=True,
                 )
+                user.save()
                 pin = emp.get('pin')
                 if pin:
                     user.set_pin(str(pin))
-                user.save()
 
                 created.append({
                     "id": str(user.pk),
