@@ -451,6 +451,78 @@ class ExecutePlan(AssistantTool):
             if found:
                 return {'type_codes': found}
 
+        if action == 'create_tax_class':
+            # "IVA General (21%)" or "Create tax class 'IVA Reducido' at 10%"
+            rate_match = re.search(r'(\d+(?:\.\d+)?)\s*%', description)
+            if rate_match:
+                rate = float(rate_match.group(1))
+                # Extract name: everything before the rate, or quoted text
+                name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+                if name_match:
+                    name = name_match.group(1).strip()
+                else:
+                    # Use text before the percentage as name
+                    name = description.split(str(rate_match.group(1)))[0].strip(' -(')
+                    if not name or len(name) < 2:
+                        name = f"Tax {rate}%"
+                return {'name': name, 'rate': rate}
+
+        if action in ('bulk_create_zones', 'create_zone'):
+            # "Terraza" or "Create zone 'Terraza'"
+            name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+            if name_match:
+                return {'name': name_match.group(1).strip()}
+
+        if action in ('bulk_create_tables', 'create_table'):
+            # "8 tables in zone 'Terraza' capacity 4" or "Create 12 tables for Interior (cap 6)"
+            count_match = re.search(r'(\d+)\s*(?:tables|mesas)', description, re.IGNORECASE)
+            zone_match = re.search(r"(?:zone|zona)\s+['\"]?([^'\"]+?)['\"]?(?:\s|,|$)", description, re.IGNORECASE)
+            cap_match = re.search(r"(?:capacity|capacidad|cap)\s*(\d+)", description, re.IGNORECASE)
+            result = {}
+            if count_match:
+                result['count'] = int(count_match.group(1))
+            if zone_match:
+                result['zone'] = zone_match.group(1).strip()
+            if cap_match:
+                result['capacity'] = int(cap_match.group(1))
+            if result:
+                return result
+
+        if action in ('import_seeds', 'import_products'):
+            # "Import restaurant products" or "Importar productos de restaurante"
+            from apps.configuration.models import HubConfig
+            hub_config = HubConfig.get_solo()
+            country = getattr(hub_config, 'country_code', 'es') or 'es'
+            types = getattr(hub_config, 'selected_business_types', []) or []
+            if types:
+                return {'type_code': types[0], 'country': country}
+
+        if action == 'update_store_config':
+            # Try to extract key=value pairs from description
+            result = {}
+            name_match = re.search(r"(?:nombre|name)[:\s]+['\"]?([^'\"]+?)['\"]?(?:,|$)", description, re.IGNORECASE)
+            if name_match:
+                result['business_name'] = name_match.group(1).strip()
+            addr_match = re.search(r"(?:dirección|address|direcci[oó]n)[:\s]+['\"]?([^'\"]+?)['\"]?(?:,|$)", description, re.IGNORECASE)
+            if addr_match:
+                result['business_address'] = addr_match.group(1).strip()
+            cif_match = re.search(r"(?:CIF|NIF|VAT|vat_number)[:\s]+['\"]?([A-Z0-9]+)['\"]?", description, re.IGNORECASE)
+            if cif_match:
+                result['vat_number'] = cif_match.group(1).strip()
+            phone_match = re.search(r"(?:teléfono|phone|tel)[:\s]+['\"]?(\d[\d\s]+)['\"]?", description, re.IGNORECASE)
+            if phone_match:
+                result['phone'] = phone_match.group(1).strip()
+            email_match = re.search(r"(?:email|correo)[:\s]+['\"]?([\w.@+-]+)['\"]?", description, re.IGNORECASE)
+            if email_match:
+                result['email'] = email_match.group(1).strip()
+            rate_match = re.search(r"(?:tax_rate|iva)[:\s]+(\d+(?:\.\d+)?)", description, re.IGNORECASE)
+            if rate_match:
+                result['tax_rate'] = float(rate_match.group(1))
+            if 'tax_included' in description.lower() or 'iva incluido' in description.lower():
+                result['tax_included'] = True
+            if result:
+                return result
+
         return {}
 
     # ── Error helpers ──────────────────────────────────────────────

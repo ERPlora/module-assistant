@@ -379,6 +379,73 @@ class ListTaxClasses(AssistantTool):
         }
 
 
+@register_tool
+class CreateTaxClass(AssistantTool):
+    name = "create_tax_class"
+    description = "Create a tax class (IVA rate) on this hub. Use for setting up tax rates like General 21%, Reducido 10%, etc."
+    requires_confirmation = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Tax class name (e.g. 'General', 'Reducido')"},
+            "rate": {"type": "number", "description": "Tax rate percentage (e.g. 21, 10, 4, 0)"},
+            "is_default": {"type": "boolean", "description": "Whether this is the default tax class"},
+            "description": {"type": "string", "description": "Optional description"},
+        },
+        "required": ["name", "rate"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from decimal import Decimal
+        from apps.configuration.models import TaxClass
+
+        name = args['name']
+        rate = Decimal(str(args['rate']))
+        is_default = args.get('is_default', False)
+        description = args.get('description', '')
+
+        if TaxClass.objects.filter(name=name).exists():
+            return {"error": f"Tax class '{name}' already exists"}
+
+        if is_default:
+            TaxClass.objects.filter(is_default=True).update(is_default=False)
+
+        order = TaxClass.objects.count() + 1
+        tc = TaxClass.objects.create(
+            name=name,
+            rate=rate,
+            is_default=is_default,
+            description=description,
+            order=order,
+        )
+        return {"id": tc.id, "name": tc.name, "rate": str(tc.rate), "is_default": tc.is_default, "created": True}
+
+
+@register_tool
+class SetTaxConfig(AssistantTool):
+    name = "set_tax_config"
+    description = "Set the default tax rate and tax-included setting on the store configuration"
+    requires_confirmation = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "tax_rate": {"type": "number", "description": "Default tax rate percentage (e.g. 21)"},
+            "tax_included": {"type": "boolean", "description": "Whether prices include tax"},
+        },
+        "required": ["tax_rate", "tax_included"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, args, request):
+        from apps.configuration.models import StoreConfig
+        store = StoreConfig.get_solo()
+        store.tax_rate = args['tax_rate']
+        store.tax_included = args['tax_included']
+        store.save()
+        return {"tax_rate": str(store.tax_rate), "tax_included": store.tax_included}
+
+
 # ============================================================================
 # WRITE TOOLS (require confirmation)
 # ============================================================================
