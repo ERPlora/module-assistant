@@ -55,7 +55,7 @@ class ExecutePlan(AssistantTool):
         "create_category, create_product, create_service_category, create_service, "
         "create_payment_method, set_business_hours, create_zone, create_table, "
         "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint, "
-        "install_blueprint_products, create_station. "
+        "install_blueprint_products, create_station, create_course. "
         "IMPORTANT: create_tax_class REQUIRES 'rate' (number) in params. "
         "Example: {\"action\": \"create_tax_class\", \"params\": {\"name\": \"IVA General\", \"rate\": 21.0, \"is_default\": true}}. "
         "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
@@ -77,7 +77,7 @@ class ExecutePlan(AssistantTool):
         "create_tax_class, update_store_config, complete_setup, create_category, create_product, "
         "create_service_category, create_service, create_payment_method, set_business_hours, "
         "create_zone, create_table, bulk_create_zones, bulk_create_tables, install_blueprint, "
-        "install_blueprint_products, create_station. "
+        "install_blueprint_products, create_station, create_course. "
         "stop_on_failure=true (default): stops on first error and rolls back completed steps. "
         "ALWAYS use exact names/prices/quantities you showed the user — never substitute."
     )
@@ -492,6 +492,15 @@ class ExecutePlan(AssistantTool):
             if cap_match:
                 result['capacity'] = int(cap_match.group(1))
             if result:
+                return result
+
+        if action == 'create_course':
+            name_match = re.search(r"['\"]([^'\"]+)['\"]", description)
+            if name_match:
+                result = {'name': name_match.group(1).strip()}
+                price_match = re.search(r'(\d+(?:\.\d+)?)\s*€', description)
+                if price_match:
+                    result['price'] = price_match.group(1)
                 return result
 
         if action in ('import_seeds', 'import_products'):
