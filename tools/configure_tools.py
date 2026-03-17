@@ -641,7 +641,8 @@ class ExecutePlan(AssistantTool):
         return {"business_name": store.business_name}
 
     def _set_tax_config(self, params):
-        from apps.configuration.models import StoreConfig
+        from decimal import Decimal
+        from apps.configuration.models import StoreConfig, TaxClass
         store = StoreConfig.get_solo()
         # Accept multiple key names for tax rate
         tax_rate = None
@@ -651,11 +652,19 @@ class ExecutePlan(AssistantTool):
                 break
         if tax_rate is not None:
             store.tax_rate = tax_rate
+            # Auto-link default_tax_class if a TaxClass matches the tax_rate
+            rate = Decimal(str(tax_rate))
+            matching_tc = TaxClass.objects.filter(rate=rate).first()
+            if matching_tc:
+                store.default_tax_class = matching_tc
         if 'tax_included' in params:
             store.tax_included = params['tax_included']
         store.is_configured = True
         store.save()
-        return {"tax_rate": str(store.tax_rate), "tax_included": store.tax_included}
+        result = {"tax_rate": str(store.tax_rate), "tax_included": store.tax_included}
+        if store.default_tax_class:
+            result["default_tax_class"] = store.default_tax_class.name
+        return result
 
     def _enable_module(self, params):
         from django.conf import settings as django_settings

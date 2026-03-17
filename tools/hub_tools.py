@@ -438,12 +438,21 @@ class SetTaxConfig(AssistantTool):
     }
 
     def execute(self, args, request):
-        from apps.configuration.models import StoreConfig
+        from decimal import Decimal
+        from apps.configuration.models import StoreConfig, TaxClass
         store = StoreConfig.get_solo()
         store.tax_rate = args['tax_rate']
         store.tax_included = args['tax_included']
+        # Auto-link default_tax_class if a TaxClass matches the tax_rate
+        rate = Decimal(str(args['tax_rate']))
+        matching_tc = TaxClass.objects.filter(rate=rate).first()
+        if matching_tc:
+            store.default_tax_class = matching_tc
         store.save()
-        return {"tax_rate": str(store.tax_rate), "tax_included": store.tax_included}
+        result = {"tax_rate": str(store.tax_rate), "tax_included": store.tax_included}
+        if store.default_tax_class:
+            result["default_tax_class"] = store.default_tax_class.name
+        return result
 
 
 # ============================================================================
