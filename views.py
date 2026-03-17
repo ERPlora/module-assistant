@@ -435,7 +435,9 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
         session_loaded = request.session.get('assistant_loaded_modules', [])
         loaded_modules = set(session_loaded) & active_module_ids
 
-    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+    user_role = request.session.get('user_role', 'employee')
+    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules,
+                                  user_role=user_role)
 
     response_text = ""
     pending_actions = []
@@ -550,6 +552,19 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                         'type': 'function_call_output',
                         'call_id': call_id,
                         'output': _json_dumps({"error": f"Permission denied: {tool.required_permission}"}),
+                    })
+                    continue
+
+                # Employee read-only guard (hard block — even if LLM hallucinates a write tool)
+                from assistant.tools import is_read_only_tool
+                if user_role == 'employee' and not is_read_only_tool(tool_name):
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({
+                            "error": "Read-only access. Your role (employee) can only query data. "
+                            "Ask a manager or admin to make changes."
+                        }),
                     })
                     continue
 

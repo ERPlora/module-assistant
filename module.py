@@ -7,7 +7,7 @@ MODULE_DESCRIPTION = _(
     'customers, invoicing, and more. Supports voice input and tiered subscription '
     'plans (Basic, Pro, Enterprise) with different AI models and usage limits.'
 )
-MODULE_VERSION = '1.0.14'
+MODULE_VERSION = '1.0.15'
 MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
 MODULE_FUNCTIONS = ['utility', 'ai']
@@ -46,7 +46,5 @@ ROLE_PERMISSIONS = {
     ],
     "employee": [
         "use_chat",
-        "use_setup_mode",
-        "view_logs",
     ],
 }

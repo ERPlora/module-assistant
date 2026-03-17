@@ -235,7 +235,27 @@ def discover_tools():
     logger.info(f"[ASSISTANT] Discovered {len(TOOL_REGISTRY)} tools")
 
 
-def get_tools_for_context(context='general', user=None, loaded_modules=None):
+def is_read_only_tool(tool_name):
+    """
+    Check if a tool is read-only (safe for employee role).
+
+    Read-only tools start with: list_, get_, search_, query_, count_,
+    check_, show_, find_. Plus core tools for tool loading/unloading
+    and memory retrieval.
+    """
+    READ_PREFIXES = (
+        'list_', 'get_', 'search_', 'query_', 'count_',
+        'check_', 'show_', 'find_',
+    )
+    ALWAYS_ALLOWED = (
+        'load_module_tools', 'unload_module_tools',
+        'search_across_modules', 'get_memories',
+    )
+    return tool_name.startswith(READ_PREFIXES) or tool_name in ALWAYS_ALLOWED
+
+
+def get_tools_for_context(context='general', user=None, loaded_modules=None,
+                          user_role=None):
     """
     Return tool schemas filtered by context and user permissions.
 
@@ -246,11 +266,14 @@ def get_tools_for_context(context='general', user=None, loaded_modules=None):
             If None, all active module tools are included (legacy behavior).
             If a set, only hub core tools (module_id=None) and tools from
             the specified modules are included.
+        user_role: 'admin', 'manager', 'employee', etc. Employees only
+            get read-only tools.
     """
     if not TOOL_REGISTRY:
         discover_tools()
 
     active_modules = set(_get_active_module_ids())
+    employee_read_only = user_role == 'employee'
 
     tools = []
     for tool in TOOL_REGISTRY.values():
@@ -271,6 +294,10 @@ def get_tools_for_context(context='general', user=None, loaded_modules=None):
         if user and tool.required_permission:
             if not user.has_perm(tool.required_permission):
                 continue
+
+        # Employee read-only: only expose read tools
+        if employee_read_only and not is_read_only_tool(tool.name):
+            continue
 
         tools.append(tool.to_openai_schema())
 
