@@ -10,6 +10,7 @@ in its root directory with tools registered via @register_tool.
 import copy
 import importlib
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -171,12 +172,25 @@ def _get_active_module_ids():
     return module_ids
 
 
+def _re_register_from_module(mod):
+    """Re-register all AssistantTool subclasses defined in a module."""
+    import inspect
+    for _name, obj in inspect.getmembers(mod, inspect.isclass):
+        if issubclass(obj, AssistantTool) and obj is not AssistantTool and getattr(obj, 'name', ''):
+            instance = obj()
+            TOOL_REGISTRY[instance.name] = instance
+
+
 def discover_tools():
     """
     Discover and register tools from all active modules.
 
     1. Registers hub core tools (always available)
     2. Scans all active modules for ai_tools.py files
+
+    Uses import (not reload) for module ai_tools to avoid Django model
+    re-registration errors. Already-imported modules are re-registered
+    by scanning their AssistantTool subclasses.
     """
     TOOL_REGISTRY.clear()
 
@@ -193,6 +207,7 @@ def discover_tools():
     for mod_name in core_modules:
         try:
             mod = importlib.import_module(mod_name)
+            # Core tools are part of assistant — safe to reload
             importlib.reload(mod)
         except ImportError as e:
             logger.error(f"[ASSISTANT] Failed to load {mod_name}: {e}")
@@ -204,8 +219,13 @@ def discover_tools():
         if module_id == 'assistant':
             continue  # Skip self
         try:
-            mod = importlib.import_module(f'{module_id}.ai_tools')
-            importlib.reload(mod)
+            ai_tools_name = f'{module_id}.ai_tools'
+            if ai_tools_name in sys.modules:
+                # Already imported — re-register tools without reloading
+                # (reload can break Django model registry)
+                _re_register_from_module(sys.modules[ai_tools_name])
+            else:
+                importlib.import_module(ai_tools_name)
             logger.debug(f"[ASSISTANT] Loaded ai_tools from {module_id}")
         except ImportError:
             pass  # Module doesn't have ai_tools.py — normal, skip
