@@ -46,41 +46,58 @@ def _set_plan_progress(request_id, step_index, total, action, status, message=''
 class ExecutePlan(AssistantTool):
     name = "execute_plan"
     strict = False  # params is free-form, can't use strict mode
-    description = (
-        "Execute a business configuration plan (or subset) atomically. "
-        "Takes a list of steps, each with an 'action' and 'params'. "
-        "Supported actions: set_regional_config, set_business_info, set_tax_config, "
-        "enable_module, disable_module, create_role, create_employee, "
-        "create_tax_class, update_store_config, complete_setup, "
-        "create_category, create_product, create_service_category, create_service, "
-        "create_payment_method, set_business_hours, create_zone, create_table, "
-        "bulk_create_zones, bulk_create_tables, bulk_set_business_hours, install_blueprint, "
-        "install_blueprint_products, create_station, create_course. "
-        "IMPORTANT: create_tax_class REQUIRES 'rate' (number) in params. "
-        "Example: {\"action\": \"create_tax_class\", \"params\": {\"name\": \"IVA General\", \"rate\": 21.0, \"is_default\": true}}. "
-        "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
-        "Always include 'categories' when creating products so they are properly categorized. "
-        "Create categories first (create_category), then reference them by name in create_product. "
-        "Steps are executed in order with real-time progress updates. "
-        "If stop_on_failure=true (default) and a step fails, remaining steps are skipped and "
-        "previously completed steps are rolled back in reverse order where rollback info is provided. "
-        "Each step may include rollback_action and rollback_params to enable rollback on failure. "
-        "Use this after presenting a plan to the user, or for partial execution "
-        "(e.g., just installing modules or just creating roles). "
-        "CRITICAL: When the user confirms a plan you presented, the steps in execute_plan "
-        "MUST match EXACTLY what you described — same names, same prices, same quantities. "
-        "Never substitute generic or simplified data for the specific details you showed the user."
-    )
-    short_description = (
-        "Execute a multi-step business configuration plan atomically with real-time progress. "
-        "Actions: set_regional_config, set_business_info, set_tax_config, create_role, create_employee, "
-        "create_tax_class, update_store_config, complete_setup, create_category, create_product, "
-        "create_service_category, create_service, create_payment_method, set_business_hours, "
-        "create_zone, create_table, bulk_create_zones, bulk_create_tables, install_blueprint, "
-        "install_blueprint_products, create_station, create_course. "
-        "stop_on_failure=true (default): stops on first error and rolls back completed steps. "
-        "ALWAYS use exact names/prices/quantities you showed the user — never substitute."
-    )
+
+    # Core actions always available (not dependent on module installation)
+    CORE_ACTIONS = [
+        'set_regional_config', 'set_business_info', 'set_tax_config',
+        'enable_module', 'disable_module', 'create_role', 'create_employee',
+        'create_tax_class', 'update_store_config', 'complete_setup',
+        'install_blueprint',
+    ]
+
+    @classmethod
+    def _get_available_actions(cls):
+        """Build list of available actions dynamically from core + registered tools."""
+        from assistant.tools import TOOL_REGISTRY
+        actions = list(cls.CORE_ACTIONS)
+        # Add module tool names that are currently registered
+        for name in TOOL_REGISTRY:
+            if name not in actions and name != 'execute_plan':
+                actions.append(name)
+        return actions
+
+    @property
+    def description(self):
+        actions = ', '.join(self._get_available_actions())
+        return (
+            "Execute a business configuration plan (or subset) atomically. "
+            "Takes a list of steps, each with an 'action' and 'params'. "
+            f"Available actions: {actions}. "
+            "IMPORTANT: create_tax_class REQUIRES 'rate' (number) in params. "
+            "Example: {\"action\": \"create_tax_class\", \"params\": {\"name\": \"IVA General\", \"rate\": 21.0, \"is_default\": true}}. "
+            "IMPORTANT: create_product accepts 'categories' (list of category names) to assign the product to categories. "
+            "Always include 'categories' when creating products so they are properly categorized. "
+            "Create categories first (create_category), then reference them by name in create_product. "
+            "Steps are executed in order with real-time progress updates. "
+            "If stop_on_failure=true (default) and a step fails, remaining steps are skipped and "
+            "previously completed steps are rolled back in reverse order where rollback info is provided. "
+            "Each step may include rollback_action and rollback_params to enable rollback on failure. "
+            "Use this after presenting a plan to the user, or for partial execution "
+            "(e.g., just installing modules or just creating roles). "
+            "CRITICAL: When the user confirms a plan you presented, the steps in execute_plan "
+            "MUST match EXACTLY what you described — same names, same prices, same quantities. "
+            "Never substitute generic or simplified data for the specific details you showed the user."
+        )
+
+    @property
+    def short_description(self):
+        actions = ', '.join(self._get_available_actions())
+        return (
+            "Execute a multi-step business configuration plan atomically with real-time progress. "
+            f"Available actions: {actions}. "
+            "stop_on_failure=true (default): stops on first error and rolls back completed steps. "
+            "ALWAYS use exact names/prices/quantities you showed the user — never substitute."
+        )
     requires_confirmation = True
     required_permission = None
     examples = [

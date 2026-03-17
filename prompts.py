@@ -100,9 +100,20 @@ Unload with `unload_module_tools` when switching context. Loaded tools persist a
 
 
 def _user_context(user_name, user_role):
+    role_rules = {
+        'admin': 'Full access to all tools and operations.',
+        'manager': 'Full access to all tools and operations.',
+        'employee': (
+            'READ-ONLY access. You can ONLY use query/list/get/search tools. '
+            'You CANNOT create, update, delete, or modify any data. '
+            'If the user asks to change something, tell them to ask a manager or admin.'
+        ),
+    }
+    access_note = role_rules.get(user_role, role_rules['employee'])
     return f"""## Current User
 - Name: {user_name}
-- Role: {user_role}"""
+- Role: {user_role}
+- Access: {access_note}"""
 
 
 def _store_context(store_config, hub_config):
@@ -688,8 +699,10 @@ Be friendly, conversational, and guide them step by step.
    - kitchen NOT installed -> NEVER mention kitchen stations
    - services NOT installed -> NEVER mention service catalog
 
-9. PAYMENT METHODS — "What payment methods do you accept? (cash, card, etc.)"
+9. PAYMENT METHODS — ONLY if 'sales' module is installed:
+   "What payment methods do you accept? (cash, card, etc.)"
    -> execute_plan(create_payment_method for each)
+   If 'sales' is NOT installed, SKIP this step entirely.
 
 10. STAFF (optional) — "Would you like to create accounts for your employees?"
     If yes: ask names, roles, PINs -> execute_plan(create_role + create_employee)
