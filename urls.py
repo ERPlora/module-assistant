@@ -9,6 +9,7 @@ urlpatterns = [
     path('chat/', views.chat_page, name='chat'),
     path('history/', views.history_page, name='history'),
     path('logs/', views.logs_page, name='logs'),
+    path('plan/', views.plan_page, name='plan'),
 
     # API (POST)
     path('chat/send/', views.chat, name='chat_message'),

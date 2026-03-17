@@ -7,7 +7,7 @@ MODULE_DESCRIPTION = _(
     'customers, invoicing, and more. Supports voice input and tiered subscription '
     'plans (Basic, Pro, Enterprise) with different AI models and usage limits.'
 )
-MODULE_VERSION = '1.0.13'
+MODULE_VERSION = '1.0.14'
 MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
 MODULE_FUNCTIONS = ['utility', 'ai']
@@ -27,6 +27,7 @@ NAVIGATION = [
     {'label': _('Chat'), 'icon': 'chatbubbles-outline', 'id': 'chat'},
     {'label': _('History'), 'icon': 'time-outline', 'id': 'history'},
     {'label': _('Action Log'), 'icon': 'list-outline', 'id': 'logs'},
+    {'label': _('Plan'), 'icon': 'card-outline', 'id': 'plan'},
 ]
 
 PERMISSIONS = [

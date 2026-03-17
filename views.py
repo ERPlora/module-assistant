@@ -2024,3 +2024,133 @@ def format_confirmation_text(tool_name, tool_args):
     # Generic fallback — stringify values to avoid join errors with dicts/lists
     args_str = ', '.join(f'{k}={v!r}' if not isinstance(v, str) else f'{k}={v}' for k, v in tool_args.items() if v is not None)
     return f"{tool_name}({args_str})"
+
+
+# ============================================================================
+# PLAN PAGE
+# ============================================================================
+
+def _get_plan_data(hub_jwt):
+    """
+    Fetch assistant config (current tier + usage) and all available tiers from Cloud.
+
+    Returns dict with:
+    - current_tier, tier_name, usage (messages_used, messages_limit)
+    - tiers: list of all available tiers with pricing
+    - subscription_status, period_end
+    """
+    import requests as http_requests
+    from django.conf import settings
+
+    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+    headers = {'Authorization': f'Bearer {hub_jwt}', 'Accept': 'application/json'}
+    data = {
+        'current_tier': 'free',
+        'tier_name': 'Free',
+        'usage': {'messages_used': 0, 'messages_limit': 30},
+        'tiers': [],
+        'has_subscription': False,
+        'subscription_status': None,
+    }
+
+    # 1. Get current config + usage
+    try:
+        resp = http_requests.get(
+            f"{base_url}/api/hubs/me/assistant/config/",
+            headers=headers,
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            config = resp.json()
+            data['current_tier'] = config.get('tier', 'free')
+            data['tier_name'] = config.get('tier_name', 'Free')
+            data['has_subscription'] = config.get('has_subscription', False)
+            data['usage'] = config.get('usage', data['usage'])
+    except Exception:
+        pass
+
+    # 2. Get all tiers from marketplace module listing
+    try:
+        resp = http_requests.get(
+            f"{base_url}/api/marketplace/modules/",
+            headers={'X-Hub-Token': hub_jwt, 'Accept': 'application/json'},
+            params={'module_id': 'assistant'},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            modules = resp.json()
+            results = modules.get('results', modules) if isinstance(modules, dict) else modules
+            for mod in results:
+                if mod.get('module_id') == 'assistant':
+                    data['tiers'] = mod.get('assistant_tiers') or []
+                    data['cloud_module_id'] = str(mod.get('id', ''))
+                    break
+    except Exception:
+        pass
+
+    # 3. Get subscription status (period end, cancel info)
+    try:
+        resp = http_requests.get(
+            f"{base_url}/api/hubs/me/module-subscription/",
+            params={'module': 'assistant'},
+            headers=headers,
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            sub = resp.json()
+            data['subscription_status'] = sub.get('status')
+            data['period_end'] = sub.get('period_end')
+            data['trial_end'] = sub.get('trial_end')
+            data['cancel_at_period_end'] = sub.get('cancel_at_period_end', False)
+    except Exception:
+        pass
+
+    return data
+
+
+@login_required
+@permission_required('assistant.use_chat')
+@with_module_nav('assistant', 'plan')
+@htmx_view('assistant/pages/plan.html', 'assistant/partials/plan_content.html')
+def plan_page(request):
+    """AI Assistant plan management — view current plan, usage, upgrade/cancel."""
+    from apps.configuration.models import HubConfig
+
+    hub_config = HubConfig.get_config()
+    plan_data = _get_plan_data(hub_config.hub_jwt)
+
+    # Build tier list with current/recommended flags
+    current_tier = plan_data['current_tier']
+    tier_order = {'free': 0, 'basic': 1, 'pro': 2, 'enterprise': 3}
+    current_order = tier_order.get(current_tier, 0)
+
+    tiers = []
+    for t in plan_data.get('tiers', []):
+        slug = t.get('slug', '')
+        order = tier_order.get(slug, 99)
+        tiers.append({
+            **t,
+            'is_current': slug == current_tier,
+            'is_upgrade': order > current_order,
+            'is_downgrade': order < current_order and slug != 'free',
+        })
+
+    usage = plan_data.get('usage', {})
+    messages_used = usage.get('messages_used', 0)
+    messages_limit = usage.get('messages_limit', 30)
+    usage_pct = min(round((messages_used / messages_limit) * 100), 100) if messages_limit > 0 else 0
+
+    return {
+        'current_tier': current_tier,
+        'tier_name': plan_data['tier_name'],
+        'tiers': tiers,
+        'cloud_module_id': plan_data.get('cloud_module_id', ''),
+        'messages_used': messages_used,
+        'messages_limit': messages_limit,
+        'usage_pct': usage_pct,
+        'has_subscription': plan_data['has_subscription'] and current_tier != 'free',
+        'subscription_status': plan_data.get('subscription_status'),
+        'period_end': plan_data.get('period_end'),
+        'trial_end': plan_data.get('trial_end'),
+        'cancel_at_period_end': plan_data.get('cancel_at_period_end', False),
+    }

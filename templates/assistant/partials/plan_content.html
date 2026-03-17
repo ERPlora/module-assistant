@@ -1,0 +1,236 @@
+{% load i18n djicons %}
+
+<div class="flex flex-col items-center p-4 sm:p-6 max-w-3xl mx-auto">
+
+    {# Current plan summary #}
+    <div class="card glass w-full mb-6">
+        <div class="card-body p-6">
+            <div class="flex items-center justify-between flex-wrap gap-4">
+                <div>
+                    <p class="text-xs uppercase tracking-wider opacity-50 m-0 mb-1">{% trans "Current Plan" %}</p>
+                    <h2 class="fs-xl fw-bold m-0">{{ tier_name }}</h2>
+                    {% if has_subscription and subscription_status == 'trialing' %}
+                    <span class="badge badge-sm color-info mt-1">{% icon "time-outline" %} {% trans "Trial" %}</span>
+                    {% endif %}
+                    {% if cancel_at_period_end %}
+                    <span class="badge badge-sm color-warning mt-1">{% icon "alert-circle-outline" %} {% trans "Cancels at period end" %}</span>
+                    {% endif %}
+                </div>
+                {% if has_subscription and not cancel_at_period_end %}
+                <button type="button"
+                        class="btn btn-ghost btn-sm color-error"
+                        x-data="{ confirming: false }"
+                        @click="
+                            if (!confirming) { confirming = true; return; }
+                            fetch('{% url 'marketplace:cancel_subscription' %}', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+                                body: JSON.stringify({ module_id: 'assistant' })
+                            })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) {
+                                    Toast.success('{% trans "Subscription will cancel at end of period" %}');
+                                    htmx.ajax('GET', '{% url 'assistant:plan' %}', { target: '#main-content-area', swap: 'innerHTML' });
+                                } else {
+                                    Toast.error(data.error || '{% trans "Error cancelling subscription" %}');
+                                }
+                                confirming = false;
+                            })
+                            .catch(() => { Toast.error('{% trans "Connection error" %}'); confirming = false; });
+                        ">
+                    {% icon "close-circle-outline" %}
+                    <span x-text="confirming ? '{% trans "Confirm cancel?" %}' : '{% trans "Cancel subscription" %}'"></span>
+                </button>
+                {% endif %}
+            </div>
+
+            {# Usage bar #}
+            <div class="mt-4">
+                <div class="flex items-center justify-between text-sm mb-1">
+                    <span class="opacity-60">{% trans "Messages this month" %}</span>
+                    <span class="fw-semibold">{{ messages_used }} / {{ messages_limit }}</span>
+                </div>
+                <div class="progress">
+                    <div class="progress-bar {% if usage_pct >= 90 %}color-error{% elif usage_pct >= 70 %}color-warning{% else %}color-primary{% endif %}"
+                         style="width: {{ usage_pct }}%"></div>
+                </div>
+                {% if usage_pct >= 90 %}
+                <p class="text-xs color-error mt-1 m-0">
+                    {% icon "warning-outline" %}
+                    {% trans "You're running low on messages. Consider upgrading your plan." %}
+                </p>
+                {% endif %}
+            </div>
+
+            {% if period_end %}
+            <p class="text-xs opacity-50 mt-3 m-0">
+                {% trans "Current period ends" %}: {{ period_end }}
+            </p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Tier cards #}
+    {% if tiers %}
+    <h3 class="fs-lg fw-semibold mb-4 self-start">{% trans "Available Plans" %}</h3>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full"
+         x-data="{ loading: '' }">
+        {% for tier in tiers %}
+        <div class="card {% if tier.is_current %}ring-2 ring-primary{% endif %} transition-all hover:shadow-lg">
+            <div class="card-body p-5">
+                {# Header #}
+                <div class="flex items-center justify-between mb-3">
+                    <h4 class="fw-bold m-0">{{ tier.name }}</h4>
+                    {% if tier.is_current %}
+                    <span class="badge badge-sm color-primary">{% trans "Current" %}</span>
+                    {% endif %}
+                </div>
+
+                {# Price #}
+                <div class="mb-3">
+                    {% if tier.price_monthly == '0' or tier.price_monthly == '0.00' %}
+                    <span class="text-2xl fw-bold">{% trans "Free" %}</span>
+                    {% else %}
+                    <span class="text-2xl fw-bold">&euro;{{ tier.price_monthly }}</span>
+                    <span class="text-sm opacity-50">/{% trans "mo" %}</span>
+                    {% endif %}
+                </div>
+
+                {# Features #}
+                <ul class="text-sm space-y-1 mb-4 pl-0" style="list-style: none;">
+                    <li class="flex items-center gap-2">
+                        {% icon "chatbubbles-outline" css_class="opacity-50" %}
+                        {% if tier.max_messages_per_month %}
+                        {{ tier.max_messages_per_month }} {% trans "messages/month" %}
+                        {% elif tier.max_sessions_per_month %}
+                        {{ tier.max_sessions_per_month }} {% trans "sessions/month" %}
+                        {% else %}
+                        {% trans "Unlimited" %}
+                        {% endif %}
+                    </li>
+                    <li class="flex items-center gap-2">
+                        {% icon "hardware-chip-outline" css_class="opacity-50" %}
+                        GPT-5
+                    </li>
+                    <li class="flex items-center gap-2">
+                        {% icon "construct-outline" css_class="opacity-50" %}
+                        {% trans "All tools included" %}
+                    </li>
+                </ul>
+
+                {# Action button #}
+                {% if tier.is_current %}
+                <button class="btn btn-block" disabled>
+                    {% icon "checkmark-circle-outline" %}
+                    {% trans "Current plan" %}
+                </button>
+                {% elif tier.is_upgrade %}
+                <button class="btn btn-block color-primary"
+                        :disabled="loading === '{{ tier.slug }}'"
+                        @click="
+                            loading = '{{ tier.slug }}';
+                            fetch('{% url 'marketplace:module_subscribe' %}', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+                                body: JSON.stringify({
+                                    module_id: 'assistant',
+                                    tier_slug: '{{ tier.slug }}',
+                                })
+                            })
+                            .then(r => r.json())
+                            .then(data => {
+                                loading = '';
+                                if (data.client_secret && data.stripe_publishable_key) {
+                                    openCheckoutModal(data.client_secret, data.stripe_publishable_key);
+                                } else if (data.checkout_url) {
+                                    window.open(data.checkout_url, '_blank');
+                                    Toast.info('{% trans "Complete payment in the opened window" %}');
+                                } else if (data.error) {
+                                    Toast.error(data.error);
+                                }
+                            })
+                            .catch(() => { loading = ''; Toast.error('{% trans "Connection error" %}'); });
+                        ">
+                    <template x-if="loading === '{{ tier.slug }}'">
+                        <span class="loading loading-sm"></span>
+                    </template>
+                    <template x-if="loading !== '{{ tier.slug }}'">
+                        <span>{% icon "arrow-up-outline" %} {% trans "Upgrade" %}</span>
+                    </template>
+                </button>
+                {% elif tier.slug == 'free' %}
+                {# Free tier — only show if user has a paid subscription #}
+                {% if has_subscription %}
+                <p class="text-xs text-center opacity-50 m-0">
+                    {% trans "Cancel your subscription to return to Free" %}
+                </p>
+                {% else %}
+                <button class="btn btn-block" disabled>
+                    {% icon "checkmark-circle-outline" %}
+                    {% trans "Current plan" %}
+                </button>
+                {% endif %}
+                {% elif tier.is_downgrade %}
+                <button class="btn btn-block btn-ghost opacity-60"
+                        :disabled="loading === '{{ tier.slug }}'"
+                        @click="
+                            loading = '{{ tier.slug }}';
+                            fetch('{% url 'marketplace:module_subscribe' %}', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+                                body: JSON.stringify({
+                                    module_id: 'assistant',
+                                    tier_slug: '{{ tier.slug }}',
+                                })
+                            })
+                            .then(r => r.json())
+                            .then(data => {
+                                loading = '';
+                                if (data.client_secret && data.stripe_publishable_key) {
+                                    openCheckoutModal(data.client_secret, data.stripe_publishable_key);
+                                } else if (data.checkout_url) {
+                                    window.open(data.checkout_url, '_blank');
+                                    Toast.info('{% trans "Complete payment in the opened window" %}');
+                                } else if (data.error) {
+                                    Toast.error(data.error);
+                                }
+                            })
+                            .catch(() => { loading = ''; Toast.error('{% trans "Connection error" %}'); });
+                        ">
+                    <template x-if="loading === '{{ tier.slug }}'">
+                        <span class="loading loading-sm"></span>
+                    </template>
+                    <template x-if="loading !== '{{ tier.slug }}'">
+                        <span>{% icon "arrow-down-outline" %} {% trans "Downgrade" %}</span>
+                    </template>
+                </button>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {# Info note #}
+    <div class="callout callout-info mt-6 w-full">
+        <span class="callout-icon">{% icon "information-circle-outline" %}</span>
+        <div class="callout-content">
+            <div class="callout-text">
+                {% trans "Plan changes take effect at the start of your next billing period. All plans include a 15-day free trial." %}
+            </div>
+        </div>
+    </div>
+    {% else %}
+    {# No tiers available (Cloud unreachable) #}
+    <div class="callout callout-warning w-full">
+        <span class="callout-icon">{% icon "cloud-offline-outline" %}</span>
+        <div class="callout-content">
+            <div class="callout-title">{% trans "Could not load plans" %}</div>
+            <div class="callout-text">{% trans "Please check your internet connection and try again." %}</div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% include "marketplace/partials/_checkout_modal.html" %}
