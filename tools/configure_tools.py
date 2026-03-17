@@ -514,7 +514,7 @@ class ExecutePlan(AssistantTool):
             if count_match:
                 result['count'] = int(count_match.group(1))
             if zone_match:
-                result['zone'] = zone_match.group(1).strip()
+                result['zone_id'] = zone_match.group(1).strip()
             if cap_match:
                 result['capacity'] = int(cap_match.group(1))
             if result:
@@ -757,6 +757,14 @@ class ExecutePlan(AssistantTool):
             is_default=is_default,
             order=order,
         )
+
+        # Auto-link default_tax_class on StoreConfig if rate matches store.tax_rate
+        from apps.configuration.models import StoreConfig
+        store = StoreConfig.get_solo()
+        if store.tax_rate and not store.default_tax_class_id and Decimal(str(store.tax_rate)) == rate:
+            store.default_tax_class = tc
+            store.save(update_fields=['default_tax_class'])
+
         return {"tax_class_id": tc.id, "name": tc.name, "rate": str(tc.rate)}
 
     # ── Store Config ───────────────────────────────────────────────

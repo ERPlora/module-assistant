@@ -419,6 +419,14 @@ class CreateTaxClass(AssistantTool):
             description=description,
             order=order,
         )
+
+        # Auto-link default_tax_class on StoreConfig if rate matches store.tax_rate
+        from apps.configuration.models import StoreConfig
+        store = StoreConfig.get_solo()
+        if store.tax_rate and not store.default_tax_class_id and Decimal(str(store.tax_rate)) == rate:
+            store.default_tax_class = tc
+            store.save(update_fields=['default_tax_class'])
+
         return {"id": tc.id, "name": tc.name, "rate": str(tc.rate), "is_default": tc.is_default, "created": True}
 
 
