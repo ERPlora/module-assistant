@@ -111,6 +111,8 @@ class AssistantTool:
             return {"error": f"Validation error: {'; '.join(messages)}"}
         except (ValueError, TypeError) as e:
             return {"error": f"Invalid input: {str(e)}"}
+        except KeyError as e:
+            return {"error": f"Missing required parameter: {e}"}
         except Exception:
             raise  # Let unknown exceptions propagate for logging
 
