@@ -7,9 +7,10 @@ MODULE_DESCRIPTION = _(
     'customers, invoicing, and more. Supports voice input and tiered subscription '
     'plans (Basic, Pro, Enterprise) with different AI models and usage limits.'
 )
-MODULE_VERSION = '1.0.15'
+MODULE_VERSION = '1.0.16'
 MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
+MODULE_CATEGORY = 'utilities'
 MODULE_FUNCTIONS = ['utility', 'ai']
 MODULE_COLOR = '#7c3aed'
 
