@@ -20,7 +20,7 @@ from apps.accounts.decorators import login_required, permission_required
 from apps.modules_runtime.navigation import with_module_nav
 from apps.core.htmx import htmx_view
 
-from .models import AssistantConversation, AssistantActionLog
+from .models import AssistantConversation, AssistantActionLog, AssistantMessage
 from .prompts import build_system_prompt
 from .tools import get_tools_for_context, get_tool
 from .feedback import record_feedback
@@ -253,18 +253,55 @@ def history_page(request):
 @permission_required('assistant.use_chat')
 def load_conversation_messages(request, conversation_id):
     """
-    Fetch conversation messages from Cloud and return rendered HTML.
+    Load conversation messages from local DB (preferred) or Cloud fallback.
 
     Called via HTMX when the user opens a conversation from history.
     Returns the messages as rendered chat bubbles for #chat-messages.
     """
-    import requests as http_requests
     import markdown
+
+    # Try local DB first — survives server restarts
+    local_messages = list(
+        AssistantMessage.objects.filter(conversation_id=conversation_id)
+        .order_by('created_at')
+        .values_list('role', 'content')
+    )
+
+    if not local_messages:
+        # Fallback: fetch from Cloud
+        local_messages = _fetch_messages_from_cloud(conversation_id)
+
+    if not local_messages:
+        return HttpResponse('')
+
+    # Render each message as HTML
+    md_renderer = markdown.Markdown(extensions=['tables', 'fenced_code'])
+    html_parts = []
+    for role, content in local_messages:
+        if role == 'assistant' and content:
+            rendered = md_renderer.convert(content)
+            md_renderer.reset()
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'assistant',
+                'content': rendered,
+            }))
+        elif role == 'user' and content:
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'user',
+                'content': content,
+            }))
+
+    return HttpResponse(''.join(html_parts))
+
+
+def _fetch_messages_from_cloud(conversation_id):
+    """Fetch messages from Cloud API. Returns list of (role, content) tuples."""
+    import requests as http_requests
     from apps.configuration.models import HubConfig
 
     config = HubConfig.get_solo()
     if not config.hub_jwt:
-        return HttpResponse('')
+        return []
 
     from django.conf import settings as django_settings
     base_url = getattr(django_settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
@@ -278,37 +315,21 @@ def load_conversation_messages(request, conversation_id):
             },
             timeout=10,
         )
-
         if response.status_code != 200:
-            return HttpResponse('')
+            return []
 
         data = response.json()
-        messages = data.get('messages', [])
+        messages = []
+        for msg in data.get('messages', []):
+            role = msg.get('role')
+            content = msg.get('content', '')
+            if role in ('user', 'assistant') and content:
+                messages.append((role, content))
+        return messages
 
     except Exception as e:
-        logger.warning(f"[ASSISTANT] Failed to load conversation {conversation_id}: {e}")
-        return HttpResponse('')
-
-    # Render each message as HTML
-    md = markdown.Markdown(extensions=['tables', 'fenced_code'])
-    html_parts = []
-    for msg in messages:
-        role = msg.get('role')
-        content = msg.get('content', '')
-        if role == 'assistant' and content:
-            rendered = md.convert(content)
-            md.reset()
-            html_parts.append(render_to_string('assistant/partials/message.html', {
-                'role': 'assistant',
-                'content': rendered,
-            }))
-        elif role == 'user' and content:
-            html_parts.append(render_to_string('assistant/partials/message.html', {
-                'role': 'user',
-                'content': content,
-            }))
-
-    return HttpResponse(''.join(html_parts))
+        logger.warning(f"[ASSISTANT] Failed to load conversation {conversation_id} from Cloud: {e}")
+        return []
 
 
 @login_required
@@ -894,6 +915,10 @@ def chat(request):
     # Track conversation memory
     _track_conversation_message(conversation, message)
 
+    # Persist user message locally
+    if message:
+        AssistantMessage.save_message(conversation, 'user', message)
+
     # Generate a request_id for progress tracking
     request_id = uuid_mod.uuid4().hex[:16]
 
@@ -1004,6 +1029,10 @@ def chat_stream(request):
 
     _track_conversation_message(conversation, message)
 
+    # Persist user message locally
+    if message:
+        AssistantMessage.save_message(conversation, 'user', message)
+
     config = HubConfig.get_solo()
     if not config.hub_jwt:
         def _err():
@@ -1043,6 +1072,8 @@ def chat_stream(request):
         # while waiting for the Cloud to connect to the LLM provider.
         yield ': keepalive\n\n'
 
+        accumulated_text = []
+
         try:
             with http_requests.post(
                 f"{base_url}/api/hubs/me/assistant/chat/stream/",
@@ -1068,12 +1099,18 @@ def chat_stream(request):
                 # Inject conversation_id as first event so frontend can update its state
                 yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
 
-                # Pass-through SSE lines from Cloud
+                # Pass-through SSE lines from Cloud, accumulating text for persistence
                 for line in resp.iter_lines(decode_unicode=True):
                     if line:
                         yield line + '\n\n'
-                    # Empty lines are SSE delimiters — forward them
-                    # (iter_lines strips them, so we add \n\n after each data line above)
+                        # Accumulate text_delta for local persistence
+                        if line.startswith('data: ') and 'text_delta' in line:
+                            try:
+                                evt = json.loads(line[6:])
+                                if evt.get('type') == 'text_delta':
+                                    accumulated_text.append(evt.get('text', ''))
+                            except (json.JSONDecodeError, TypeError):
+                                pass
 
         except http_requests.exceptions.Timeout:
             yield f'data: {json.dumps({"type": "error", "message": "The request took too long. Please try again with a shorter message."})}\n\n'
@@ -1082,6 +1119,14 @@ def chat_stream(request):
             logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
             yield f'data: {json.dumps({"type": "error", "message": "Connection error. Please try again."})}\n\n'
             yield 'data: [DONE]\n\n'
+
+        # Persist assistant response locally after stream completes
+        full_text = ''.join(accumulated_text)
+        if full_text:
+            try:
+                AssistantMessage.save_message(conversation, 'assistant', full_text)
+            except Exception as e:
+                logger.warning(f"[ASSISTANT STREAM] Failed to persist message: {e}")
 
     response = StreamingHttpResponse(_proxy_stream(), content_type='text/event-stream')
     response['X-Conversation-Id'] = conversation_id_str
@@ -1128,6 +1173,14 @@ def poll_progress(request, request_id):
                 'content': error_msg,
                 'error': True,
             }, request=request))
+
+        # Persist assistant response locally
+        if result.get('response_text') and result.get('conversation_id'):
+            try:
+                conv = AssistantConversation.objects.get(id=result['conversation_id'])
+                AssistantMessage.save_message(conv, 'assistant', result['response_text'])
+            except AssistantConversation.DoesNotExist:
+                pass
 
         # Build final response HTML
         html_parts = []

@@ -25,6 +25,61 @@ class AssistantConversation(HubBaseModel):
         return f"Conversation {self.id} ({self.user.name}, {self.context})"
 
 
+class AssistantMessage(HubBaseModel):
+    """
+    Persists chat messages locally so history survives server restarts.
+
+    Keeps the last MAX_MESSAGES_PER_CONVERSATION messages per conversation;
+    older ones are pruned on save.
+    """
+    MAX_MESSAGES_PER_CONVERSATION = 200
+
+    ROLE_CHOICES = [
+        ('user', 'User'),
+        ('assistant', 'Assistant'),
+    ]
+
+    conversation = models.ForeignKey(
+        AssistantConversation,
+        on_delete=models.CASCADE,
+        related_name='messages',
+    )
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
+    content = models.TextField()
+
+    class Meta(HubBaseModel.Meta):
+        db_table = 'assistant_assistantmessage'
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['conversation', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.role}: {self.content[:60]}"
+
+    @classmethod
+    def save_message(cls, conversation, role, content):
+        """Save a message and prune old ones if over the limit."""
+        if not content:
+            return None
+        msg = cls.objects.create(
+            conversation=conversation,
+            role=role,
+            content=content,
+        )
+        # Progressive cleanup: delete oldest messages beyond limit
+        count = cls.objects.filter(conversation=conversation).count()
+        if count > cls.MAX_MESSAGES_PER_CONVERSATION:
+            excess = count - cls.MAX_MESSAGES_PER_CONVERSATION
+            oldest_ids = list(
+                cls.objects.filter(conversation=conversation)
+                .order_by('created_at')
+                .values_list('id', flat=True)[:excess]
+            )
+            cls.objects.filter(id__in=oldest_ids).delete()
+        return msg
+
+
 class AssistantActionLog(HubBaseModel):
     """Audit trail for all assistant-executed actions."""
     user = models.ForeignKey(
