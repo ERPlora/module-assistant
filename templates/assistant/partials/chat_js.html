@@ -633,6 +633,18 @@
     });
 
     // Restore previous conversation on page load
+    function showWelcome() {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        var welcome = (typeof WELCOME_HTML !== 'undefined' && WELCOME_HTML) ? WELCOME_HTML : '';
+        if (welcome) {
+            msgs.innerHTML = welcome;
+        }
+        // Clear stale conversation reference
+        var convInput = document.getElementById('conv-id');
+        if (convInput) convInput.value = '';
+    }
+
     function loadConversationFromServer(conversationId) {
         var msgs = document.getElementById('chat-messages');
         if (!msgs) return;
@@ -651,14 +663,12 @@
             if (html) {
                 msgs.innerHTML = html;
             } else {
-                msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
-                    '{% trans "Could not load conversation history." %}' + '</p></div></div>';
+                showWelcome();
             }
             scrollToBottom();
             saveChatToStorage();
         }).catch(function() {
-            msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
-                '{% trans "Could not load conversation history." %}' + '</p></div></div>';
+            showWelcome();
         });
     }
 
