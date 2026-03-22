@@ -545,23 +545,41 @@
         }
     });
 
+    function startNewChat() {
+        var oldConvId = document.getElementById('conv-id').value;
+        if (oldConvId) {
+            try { sessionStorage.removeItem(CHAT_STORAGE_KEY + oldConvId); } catch(e2) {}
+        }
+        document.getElementById('conv-id').value = '';
+        var msgs = document.getElementById('chat-messages');
+        {% trans "Hello! I'm your AI assistant. How can I help?" as new_chat_msg %}
+        msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
+            '{{ new_chat_msg|escapejs }}' +
+            '</p></div></div>';
+        clearFileAttachment();
+        setLoading(false);
+        _streamRawText = '';
+        // Clear active state in sidebar
+        document.querySelectorAll('.chat-sidebar-item').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        var inp = document.getElementById('chat-input');
+        if (inp) { inp.value = ''; inp.focus(); }
+    }
+
     document.addEventListener('click', function(e) {
-        if (e.target.closest('#chat-new')) {
-            var oldConvId = document.getElementById('conv-id').value;
-            if (oldConvId) {
-                try { sessionStorage.removeItem(CHAT_STORAGE_KEY + oldConvId); } catch(e2) {}
+        if (e.target.closest('#chat-new') || e.target.closest('#chat-new-sidebar')) {
+            startNewChat();
+            if (e.target.closest('#chat-new-sidebar') && typeof closeMobileSidebar === 'function') {
+                closeMobileSidebar();
             }
-            document.getElementById('conv-id').value = '';
-            var msgs = document.getElementById('chat-messages');
-            {% trans "Hello! I'm your AI assistant. How can I help?" as new_chat_msg %}
-            msgs.innerHTML = '<div class="chat-message chat-assistant"><div class="chat-bubble"><p>' +
-                '{{ new_chat_msg|escapejs }}' +
-                '</p></div></div>';
-            clearFileAttachment();
-            setLoading(false);
-            _streamRawText = '';
-            var inp = document.getElementById('chat-input');
-            if (inp) { inp.value = ''; inp.focus(); }
+            return;
+        }
+        if (e.target.closest('#chat-sidebar-toggle')) {
+            var sidebar = document.getElementById('chat-sidebar');
+            var overlay = document.getElementById('chat-sidebar-overlay');
+            if (sidebar) sidebar.classList.add('mobile-open');
+            if (overlay) overlay.classList.remove('hidden');
             return;
         }
         if (e.target.closest('#chat-attach')) { document.getElementById('chat-file').click(); return; }

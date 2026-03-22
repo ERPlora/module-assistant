@@ -1,0 +1,31 @@
+{% load i18n djicons %}
+
+{% for conv in conversations %}
+<button type="button"
+        class="chat-sidebar-item w-full text-left px-3 py-2 rounded-lg hover:bg-base-200 transition-colors truncate text-sm"
+        data-conversation-id="{{ conv.id }}"
+        onclick="loadSidebarConversation({{ conv.id }})">
+    <div class="font-medium truncate">
+        {% if conv.title %}
+            {{ conv.title|truncatechars:50 }}
+        {% elif conv.first_message %}
+            {{ conv.first_message|truncatechars:50 }}
+        {% else %}
+            {% trans "Conversation" %} #{{ conv.id }}
+        {% endif %}
+    </div>
+    <div class="text-xs opacity-50 mt-0.5">
+        {{ conv.updated_at|date:"d/m H:i" }}
+        {% if conv.message_count %}&middot; {{ conv.message_count }}{% endif %}
+    </div>
+</button>
+{% endfor %}
+
+{% if next_conversation_offset %}
+<div hx-get="{% url 'assistant:chat_sidebar_conversations' %}?offset={{ next_conversation_offset }}"
+     hx-trigger="revealed"
+     hx-swap="outerHTML"
+     class="flex items-center justify-center p-2">
+    <span class="loading loading-sm"></span>
+</div>
+{% endif %}

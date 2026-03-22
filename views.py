@@ -20,7 +20,10 @@ from apps.accounts.decorators import login_required, permission_required
 from apps.modules_runtime.navigation import with_module_nav
 from apps.core.htmx import htmx_view
 
-from .models import AssistantConversation, AssistantActionLog, AssistantMessage
+from .models import (
+    AssistantConversation, AssistantActionLog, AssistantMessage,
+    AssistantRequest, AssistantFile,
+)
 from .prompts import build_system_prompt
 from .tools import get_tools_for_context, get_tool
 from .feedback import record_feedback
@@ -166,9 +169,15 @@ def _get_tier_info(hub_jwt):
 @htmx_view('assistant/pages/chat.html', 'assistant/partials/chat_panel.html')
 def chat_page(request):
     """Main chat page."""
-    conversations = AssistantConversation.objects.filter(
+    SIDEBAR_PAGE_SIZE = 20
+    qs = AssistantConversation.objects.filter(
         user_id=request.session.get('local_user_id'),
-    ).order_by('-updated_at')[:10]
+    ).order_by('-updated_at')
+
+    conversations = list(qs[:SIDEBAR_PAGE_SIZE + 1])
+    has_more_conversations = len(conversations) > SIDEBAR_PAGE_SIZE
+    conversations = conversations[:SIDEBAR_PAGE_SIZE]
+    next_conversation_offset = SIDEBAR_PAGE_SIZE if has_more_conversations else None
 
     last_conversation = conversations[0] if conversations else None
 
@@ -207,6 +216,7 @@ def chat_page(request):
     return {
         'conversations': conversations,
         'last_conversation': active_conversation,
+        'next_conversation_offset': next_conversation_offset,
         'chat_context': context,
         'is_setup_mode': context == 'setup',
         'can_attach': can_attach,
@@ -215,6 +225,29 @@ def chat_page(request):
         'show_upgrade': show_upgrade,
         'upgrade_url': upgrade_url,
     }
+
+
+@login_required
+@permission_required('assistant.use_chat')
+def chat_sidebar_conversations(request):
+    """HTMX endpoint: load more conversations for the chat sidebar (infinite scroll)."""
+    SIDEBAR_PAGE_SIZE = 20
+    offset = int(request.GET.get('offset', 0))
+
+    qs = AssistantConversation.objects.filter(
+        user_id=request.session.get('local_user_id'),
+    ).order_by('-updated_at')
+
+    conversations = list(qs[offset:offset + SIDEBAR_PAGE_SIZE + 1])
+    has_more = len(conversations) > SIDEBAR_PAGE_SIZE
+    conversations = conversations[:SIDEBAR_PAGE_SIZE]
+    next_offset = offset + SIDEBAR_PAGE_SIZE if has_more else None
+
+    from django.shortcuts import render as django_render
+    return django_render(request, 'assistant/partials/sidebar_conversations.html', {
+        'conversations': conversations,
+        'next_conversation_offset': next_offset,
+    })
 
 
 @login_required
@@ -364,14 +397,28 @@ class AgenticLoopError(Exception):
     pass
 
 
-def _set_progress(request_id, event_type, data=''):
-    """Update progress for a polling request."""
+def _set_progress(request_id, event_type, data='', db_request_id=None):
+    """Update progress for a polling request. Dual-write: cache + DB."""
     if request_id:
         cache.set(
             f'assistant_progress_{request_id}',
             {'type': event_type, 'data': data},
             timeout=PROGRESS_CACHE_TIMEOUT,
         )
+    # Also persist to DB (survives hub restart)
+    if db_request_id:
+        try:
+            updates = {'progress_message': str(data)[:200]}
+            if event_type == 'complete':
+                updates['status'] = 'complete'
+            elif event_type == 'error':
+                updates['status'] = 'error'
+                updates['error_message'] = str(data)
+            elif event_type in ('thinking', 'tool'):
+                updates['status'] = 'processing'
+            AssistantRequest.objects.filter(id=db_request_id).update(**updates)
+        except Exception:
+            pass  # Best-effort DB write
 
 
 def _get_post_restart_message(user_id):
@@ -415,8 +462,19 @@ def _get_post_restart_message(user_id):
     )
 
 
+def _check_db_request_status(request):
+    """Check DB for the most recent pending/processing AssistantRequest for this user."""
+    user_id = request.session.get('local_user_id')
+    if not user_id:
+        return None
+    return AssistantRequest.objects.filter(
+        user_id=user_id,
+        status__in=['pending', 'processing', 'complete', 'error'],
+    ).order_by('-created_at').first()
+
+
 def run_agentic_loop(user, conversation, ai_input, context, request,
-                     request_id=None):
+                     request_id=None, db_request_id=None):
     """
     Run the agentic tool-calling loop.
 
@@ -429,6 +487,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
         context: 'general' or 'setup'
         request: Django request (for session, building prompts)
         request_id: optional ID for progress tracking via polling
+        db_request_id: optional AssistantRequest UUID for DB persistence
 
     Returns:
         dict with keys:
@@ -465,18 +524,33 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     tier_info = None
     call_counts = {}  # {call_hash: count} for anti-loop detection
 
-    _set_progress(request_id, 'thinking', 'Analyzing your request...')
+    _set_progress(request_id, 'thinking', 'Analyzing your request...',
+                  db_request_id=db_request_id)
+
+    use_async = _is_async_available()
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
-            response_data, loop_tier_info = _call_cloud_proxy(
-                request=request,
-                input_data=ai_input,
-                instructions=instructions,
-                tools=tools,
-                conversation_id=conversation_id,
-                new_session=(is_new_session and iteration == 0),
-            )
+            if use_async:
+                response_data, loop_tier_info = _call_cloud_async_with_poll(
+                    request=request,
+                    input_data=ai_input,
+                    instructions=instructions,
+                    tools=tools,
+                    conversation_id=conversation_id,
+                    new_session=(is_new_session and iteration == 0),
+                    request_id=request_id,
+                    db_request_id=db_request_id,
+                )
+            else:
+                response_data, loop_tier_info = _call_cloud_proxy(
+                    request=request,
+                    input_data=ai_input,
+                    instructions=instructions,
+                    tools=tools,
+                    conversation_id=conversation_id,
+                    new_session=(is_new_session and iteration == 0),
+                )
             if loop_tier_info:
                 tier_info = loop_tier_info
         except CloudProxyError as e:
@@ -492,7 +566,21 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
                     f"Monthly usage limit reached ({used}/{limit} sessions). "
                     "Please upgrade your plan or wait until next month."
                 )
-            raise AgenticLoopError(f"Error connecting to AI service: {str(e)}")
+            # If async endpoint not found (404), fall back to sync for this session
+            if use_async and e.status_code == 404:
+                use_async = False
+                response_data, loop_tier_info = _call_cloud_proxy(
+                    request=request,
+                    input_data=ai_input,
+                    instructions=instructions,
+                    tools=tools,
+                    conversation_id=conversation_id,
+                    new_session=(is_new_session and iteration == 0),
+                )
+                if loop_tier_info:
+                    tier_info = loop_tier_info
+            else:
+                raise AgenticLoopError(f"Error connecting to AI service: {str(e)}")
         except AgenticLoopError:
             raise
         except Exception as e:
@@ -549,7 +637,8 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
             # every call_id always gets a result (prevents BUG-002:
             # "No tool output found for function call" corruption).
             try:
-                _set_progress(request_id, 'tool', f'Using {tool_name}...')
+                _set_progress(request_id, 'tool', f'Using {tool_name}...',
+                              db_request_id=db_request_id)
                 tool = get_tool(tool_name)
                 if not tool:
                     record_feedback(
@@ -922,6 +1011,14 @@ def chat(request):
     # Generate a request_id for progress tracking
     request_id = uuid_mod.uuid4().hex[:16]
 
+    # Create persistent AssistantRequest in DB (survives hub restart)
+    db_request = AssistantRequest.objects.create(
+        conversation=conversation,
+        user=user,
+        user_message=message,
+        status='pending',
+    )
+
     # Capture session data needed by the background thread
     session_data = dict(request.session)
 
@@ -936,10 +1033,18 @@ def chat(request):
             result = run_agentic_loop(
                 user, conversation, ai_input, context, fake_request,
                 request_id=request_id,
+                db_request_id=db_request.id,
             )
             # Store the completed result
             cache.set(f'assistant_result_{request_id}', result, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'complete', '')
+            _set_progress(request_id, 'complete', '', db_request_id=db_request.id)
+
+            # Persist result to DB
+            AssistantRequest.objects.filter(id=db_request.id).update(
+                status='complete',
+                response_text=result.get('response_text', ''),
+                pending_actions=result.get('pending_actions', []),
+            )
 
             # If install_modules flagged a restart, schedule it AFTER the
             # result is stored so the frontend can retrieve it first.
@@ -950,17 +1055,17 @@ def chat(request):
         except AgenticLoopError as e:
             # AgenticLoopError has user-facing messages (already sanitized)
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', str(e))
+            _set_progress(request_id, 'error', str(e), db_request_id=db_request.id)
         except Exception as e:
             logger.error(f"[ASSISTANT] Background error: {e}", exc_info=True)
             # Show friendly message to user, log technical details
             friendly_msg = "Something went wrong. Please try again or start a new conversation."
             cache.set(f'assistant_result_{request_id}', {'error': friendly_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', friendly_msg)
+            _set_progress(request_id, 'error', friendly_msg, db_request_id=db_request.id)
 
     # Set initial progress before starting thread to avoid race condition
     # where first poll fires before the thread sets any progress entry
-    _set_progress(request_id, 'thinking', 'Analyzing your request...')
+    _set_progress(request_id, 'thinking', 'Analyzing your request...', db_request_id=db_request.id)
 
     # Start background thread
     thread = threading.Thread(target=_background_task, daemon=True)
@@ -1150,13 +1255,37 @@ def poll_progress(request, request_id):
             progress = {'type': 'complete', 'data': ''}
         else:
             # Neither progress nor result — likely hub restarted (LocMemCache wiped).
-            # Check the last confirmed action to give a meaningful message.
-            user_id = request.session.get('local_user_id')
-            message = _get_post_restart_message(user_id)
-            return HttpResponse(render_to_string('assistant/partials/message.html', {
-                'role': 'system',
-                'content': message,
-            }, request=request))
+            # Fall back to DB for persistent request status.
+            db_req = _check_db_request_status(request)
+            if db_req:
+                if db_req.status == 'complete':
+                    # Reconstruct result from DB
+                    cache.set(f'assistant_result_{request_id}', {
+                        'response_text': db_req.response_text,
+                        'pending_actions': db_req.pending_actions or [],
+                        'conversation_id': db_req.conversation_id,
+                    }, timeout=PROGRESS_CACHE_TIMEOUT)
+                    progress = {'type': 'complete', 'data': ''}
+                elif db_req.status == 'error':
+                    cache.set(f'assistant_result_{request_id}', {
+                        'error': db_req.error_message or 'Unknown error',
+                    }, timeout=PROGRESS_CACHE_TIMEOUT)
+                    progress = {'type': 'error', 'data': db_req.error_message}
+                elif db_req.status in ('pending', 'processing'):
+                    # Still in progress — show last known progress
+                    return HttpResponse(render_to_string('assistant/partials/progress.html', {
+                        'request_id': request_id,
+                        'message': db_req.progress_message or 'Processing...',
+                    }, request=request))
+
+            if not progress:
+                # Check the last confirmed action to give a meaningful message.
+                user_id = request.session.get('local_user_id')
+                message = _get_post_restart_message(user_id)
+                return HttpResponse(render_to_string('assistant/partials/message.html', {
+                    'role': 'system',
+                    'content': message,
+                }, request=request))
 
     if progress['type'] in ('complete', 'error'):
         # Get the final result
@@ -1730,6 +1859,171 @@ def _error_response(message, request):
     }, request=request))
 
 
+# ============================================================================
+# ASYNC CLOUD PROXY (SQS + Lambda)
+# ============================================================================
+
+ASYNC_POLL_INTERVAL = 1.0   # seconds between polls
+ASYNC_POLL_MAX_WAIT = 300   # 5 minutes max wait
+
+
+def _call_cloud_async_with_poll(request, input_data, instructions, tools,
+                                conversation_id='', new_session=False,
+                                request_id=None, db_request_id=None):
+    """
+    Send request to Cloud async endpoint, then poll until complete.
+
+    Returns (response_data, tier_info) — same signature as _call_cloud_proxy.
+    """
+    import time
+
+    cloud_request_id, tier_info = _call_cloud_proxy_async(
+        request=request,
+        input_data=input_data,
+        instructions=instructions,
+        tools=tools,
+        conversation_id=conversation_id,
+        new_session=new_session,
+    )
+
+    if not cloud_request_id:
+        raise CloudProxyError("No request_id returned from async endpoint")
+
+    _set_progress(request_id, 'thinking', 'AI is processing...',
+                  db_request_id=db_request_id)
+
+    elapsed = 0
+    while elapsed < ASYNC_POLL_MAX_WAIT:
+        time.sleep(ASYNC_POLL_INTERVAL)
+        elapsed += ASYNC_POLL_INTERVAL
+
+        result = _poll_cloud_async_status(cloud_request_id)
+        status = result.get('status', '')
+
+        if status == 'complete':
+            response_data = result.get('response', {})
+            usage = result.get('usage')
+            if usage and tier_info:
+                tier_info.update(usage)
+            return response_data, tier_info
+
+        if status == 'error':
+            error_msg = result.get('error_message', 'Unknown error from AI service')
+            raise AgenticLoopError(error_msg)
+
+        if status == 'processing':
+            _set_progress(request_id, 'thinking', 'AI is thinking...',
+                          db_request_id=db_request_id)
+
+    raise AgenticLoopError("AI request timed out. Please try again.")
+
+
+def _call_cloud_proxy_async(request, input_data, instructions, tools,
+                            conversation_id='', new_session=False):
+    """
+    Send chat request to the Cloud async endpoint.
+
+    Returns (request_id, tier_info) — the Hub then polls for the result.
+    """
+    import requests as http_requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    from apps.configuration.models import HubConfig
+
+    config = HubConfig.get_solo()
+    if not config.hub_jwt:
+        raise CloudProxyError(
+            "Hub is not connected to Cloud. Please configure Cloud connection first."
+        )
+
+    from django.conf import settings
+    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+
+    payload = {
+        'input': input_data,
+        'instructions': instructions,
+        'conversation_id': conversation_id,
+    }
+    if tools:
+        payload['tools'] = tools
+    if new_session:
+        payload['new_session'] = True
+
+    session = http_requests.Session()
+    retry = Retry(total=1, backoff_factor=0.5, status_forcelist=[502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retry))
+
+    response = session.post(
+        f"{base_url}/api/hubs/me/assistant/chat/async/",
+        json=payload,
+        headers={
+            'Authorization': f'Bearer {config.hub_jwt}',
+            'Content-Type': 'application/json',
+        },
+        timeout=30,  # Async endpoint should respond quickly
+    )
+
+    if response.status_code != 200:
+        error_data = {}
+        if response.headers.get('content-type', '').startswith('application/json'):
+            error_data = response.json()
+        raise CloudProxyError(
+            error_data.get('error', response.text[:200]),
+            status_code=response.status_code,
+            error_data=error_data,
+        )
+
+    data = response.json()
+    tier_info = None
+    tier_header = response.headers.get('X-Assistant-Tier')
+    usage_header = response.headers.get('X-Assistant-Usage')
+    if tier_header:
+        tier_info = {'tier': tier_header}
+        if usage_header:
+            try:
+                tier_info.update(json.loads(usage_header))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    return data.get('request_id'), tier_info
+
+
+def _poll_cloud_async_status(cloud_request_id):
+    """
+    Poll Cloud for the status of an async request.
+
+    Returns dict: {status, response?, usage?, error_message?}
+    """
+    import requests as http_requests
+    from apps.configuration.models import HubConfig
+
+    config = HubConfig.get_solo()
+    if not config.hub_jwt:
+        return {'status': 'error', 'error_message': 'Hub not connected to Cloud'}
+
+    from django.conf import settings
+    base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
+
+    try:
+        resp = http_requests.get(
+            f"{base_url}/api/hubs/me/assistant/chat/{cloud_request_id}/status/",
+            headers={'Authorization': f'Bearer {config.hub_jwt}'},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        return {'status': 'error', 'error_message': f'Cloud returned {resp.status_code}'}
+    except Exception as e:
+        return {'status': 'error', 'error_message': str(e)}
+
+
+def _is_async_available():
+    """Check if Cloud supports async assistant (feature flag)."""
+    # For now, always try async. If the endpoint returns 404, fall back to sync.
+    # In future, this could check the /config/ response for a feature flag.
+    return True
+
+
 def _process_pdf_upload(uploaded_file, message):
     """
     Process a PDF upload into multimodal input for the AI assistant.
@@ -2222,3 +2516,23 @@ def plan_page(request):
         'trial_end': plan_data.get('trial_end'),
         'cancel_at_period_end': plan_data.get('cancel_at_period_end', False),
     }
+
+
+@login_required
+@permission_required('assistant.use_chat')
+def download_file(request, file_id):
+    """Download an assistant-generated file via S3 presigned URL."""
+    from django.http import Http404
+    from django.shortcuts import redirect
+
+    try:
+        f = AssistantFile.objects.get(
+            id=file_id,
+            conversation__user_id=request.session.get('local_user_id'),
+        )
+    except AssistantFile.DoesNotExist:
+        raise Http404
+
+    from django.core.files.storage import default_storage
+    url = default_storage.url(f.s3_key)
+    return redirect(url)

@@ -1,110 +1,146 @@
 {% load i18n djicons static %}
 
-<div class="flex flex-col h-full" style="min-height: calc(100vh - 180px);">
-    <!-- Chat toolbar -->
-    <div class="flex items-center justify-between px-4 py-2 border-b border-base-200">
-        <div id="chat-tier-info" class="flex items-center gap-2 text-xs opacity-75">
-            <span id="tier-badge" class="badge badge-sm"></span>
-            <span id="tier-usage" class="hidden"></span>
-            {% if show_upgrade %}
-            <a href="{{ upgrade_url }}" target="_blank" rel="noopener"
-               id="upgrade-link"
-               class="btn btn-ghost btn-sm text-xs hidden"
-               title="{% trans 'Upgrade your AI assistant plan' %}">
-                {% icon "arrow-up-outline" size="sm" %}
-                <span class="hidden sm:inline">{% trans "Upgrade" %}</span>
-            </a>
-            {% endif %}
-        </div>
-        <div class="flex items-center gap-1">
+<div class="flex h-full" style="min-height: calc(100vh - 180px);">
+    <!-- Sidebar: conversation list -->
+    <div id="chat-sidebar"
+         class="hidden md:flex flex-col w-64 border-r border-base-200 bg-base-100 flex-shrink-0">
+        <!-- Sidebar header -->
+        <div class="flex items-center justify-between px-3 py-2 border-b border-base-200">
+            <span class="text-sm font-medium opacity-75">{% trans "Conversations" %}</span>
             <button type="button"
-                    id="chat-new"
+                    id="chat-new-sidebar"
                     class="btn btn-ghost btn-sm"
                     title="{% trans 'New conversation' %}">
-                {% icon "add-circle-outline" %}
-                <span class="hidden sm:inline ml-1">{% trans "New Chat" %}</span>
+                {% icon "add-outline" size="sm" %}
             </button>
         </div>
-    </div>
-
-    <!-- Chat messages area -->
-    <div id="chat-messages"
-         class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-
-        <!-- Welcome message -->
-        <div class="chat-message chat-assistant">
-            <div class="chat-bubble">
-                {% if is_setup_mode %}
-                <p>{% trans "Welcome! I'll help you set up your hub. Let's get started — tell me about your business. What kind of business do you have and where are you located?" %}</p>
-                <p class="mt-2 text-sm opacity-75">{% trans "For example: 'I have a restaurant in Madrid' or 'Hair salon in Berlin'" %}</p>
-                {% else %}
-                <p>{% trans "Hello! I'm your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>
-                <p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>
-                <ul class="mt-1 text-sm opacity-75 list-disc pl-4">
-                    <li>{% trans "What modules are available?" %}</li>
-                    <li>{% trans "Show me the current configuration" %}</li>
-                    <li>{% trans "Create an employee named Juan with manager role" %}</li>
-                </ul>
-                {% endif %}
-                <p class="mt-3 text-xs opacity-50">{% blocktrans %}Need ideas? <a href="https://erplora.com/industries/" target="_blank" rel="noopener" style="text-decoration: underline;">See what ERPlora can do for your industry</a>.{% endblocktrans %}</p>
-            </div>
+        <!-- Scrollable conversation list -->
+        <div id="chat-sidebar-list" class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
+            {% include "assistant/partials/sidebar_conversations.html" %}
         </div>
     </div>
 
-    <!-- Input area -->
-    <div class="p-4 border-t border-base-200">
-        <form id="chat-form"
-              method="post"
-              data-stream-url="{% url 'assistant:chat_stream' %}"
-              data-fallback-url="{% url 'assistant:chat_message' %}"
-              enctype="multipart/form-data">
-            {% csrf_token %}
-            <input type="hidden" name="conversation_id" id="conv-id" value="{{ last_conversation.id|default:'' }}">
-            <input type="hidden" name="context" value="{{ chat_context|default:'general' }}">
-
-            {% if can_attach %}
-            <!-- File preview -->
-            <div id="file-preview" class="hidden mb-2 p-2 rounded-lg bg-base-200 flex items-center gap-2">
-                <img id="file-preview-img" class="hidden h-12 w-12 object-cover rounded" src="" alt="">
-                <span id="file-preview-icon" class="hidden text-xl">{% icon "document-outline" %}</span>
-                <span id="file-preview-name" class="text-sm flex-1 truncate"></span>
-                <button type="button" id="chat-file-remove" class="btn btn-ghost btn-sm" title="{% trans 'Remove' %}">&times;</button>
+    <!-- Main chat area -->
+    <div class="flex flex-col flex-1 min-w-0">
+        <!-- Chat toolbar -->
+        <div class="flex items-center justify-between px-4 py-2 border-b border-base-200">
+            <div class="flex items-center gap-2">
+                <!-- Mobile sidebar toggle -->
+                <button type="button"
+                        id="chat-sidebar-toggle"
+                        class="btn btn-ghost btn-sm md:hidden"
+                        title="{% trans 'Conversations' %}">
+                    {% icon "menu-outline" %}
+                </button>
+                <div id="chat-tier-info" class="flex items-center gap-2 text-xs opacity-75">
+                    <span id="tier-badge" class="badge badge-sm"></span>
+                    <span id="tier-usage" class="hidden"></span>
+                    {% if show_upgrade %}
+                    <a href="{{ upgrade_url }}" target="_blank" rel="noopener"
+                       id="upgrade-link"
+                       class="btn btn-ghost btn-sm text-xs hidden"
+                       title="{% trans 'Upgrade your AI assistant plan' %}">
+                        {% icon "arrow-up-outline" size="sm" %}
+                        <span class="hidden sm:inline">{% trans "Upgrade" %}</span>
+                    </a>
+                    {% endif %}
+                </div>
             </div>
-            <input type="file" id="chat-file" name="file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden>
-            {% endif %}
+            <div class="flex items-center gap-1">
+                <button type="button"
+                        id="chat-new"
+                        class="btn btn-ghost btn-sm"
+                        title="{% trans 'New conversation' %}">
+                    {% icon "add-circle-outline" %}
+                    <span class="hidden sm:inline ml-1">{% trans "New Chat" %}</span>
+                </button>
+            </div>
+        </div>
 
-            <div class="flex gap-2 items-end">
-                <textarea
-                    name="message"
-                    id="chat-input"
-                    class="input flex-1"
-                    rows="1"
-                    placeholder="{% trans 'Type a message...' %}"
-                    style="resize: none; max-height: 120px;"></textarea>
+        <!-- Chat messages area -->
+        <div id="chat-messages"
+             class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+
+            <!-- Welcome message -->
+            <div class="chat-message chat-assistant">
+                <div class="chat-bubble">
+                    {% if is_setup_mode %}
+                    <p>{% trans "Welcome! I'll help you set up your hub. Let's get started — tell me about your business. What kind of business do you have and where are you located?" %}</p>
+                    <p class="mt-2 text-sm opacity-75">{% trans "For example: 'I have a restaurant in Madrid' or 'Hair salon in Berlin'" %}</p>
+                    {% else %}
+                    <p>{% trans "Hello! I'm your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>
+                    <p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>
+                    <ul class="mt-1 text-sm opacity-75 list-disc pl-4">
+                        <li>{% trans "What modules are available?" %}</li>
+                        <li>{% trans "Show me the current configuration" %}</li>
+                        <li>{% trans "Create an employee named Juan with manager role" %}</li>
+                    </ul>
+                    {% endif %}
+                    <p class="mt-3 text-xs opacity-50">{% blocktrans %}Need ideas? <a href="https://erplora.com/industries/" target="_blank" rel="noopener" style="text-decoration: underline;">See what ERPlora can do for your industry</a>.{% endblocktrans %}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input area -->
+        <div class="p-4 border-t border-base-200">
+            <form id="chat-form"
+                  method="post"
+                  data-stream-url="{% url 'assistant:chat_stream' %}"
+                  data-fallback-url="{% url 'assistant:chat_message' %}"
+                  enctype="multipart/form-data">
+                {% csrf_token %}
+                <input type="hidden" name="conversation_id" id="conv-id" value="{{ last_conversation.id|default:'' }}">
+                <input type="hidden" name="context" value="{{ chat_context|default:'general' }}">
+
                 {% if can_attach %}
-                <button type="button"
-                        id="chat-attach"
-                        class="btn btn-ghost"
-                        title="{% trans 'Attach file' %}">
-                    {% icon "attach-outline" %}
-                </button>
+                <!-- File preview -->
+                <div id="file-preview" class="hidden mb-2 p-2 rounded-lg bg-base-200 flex items-center gap-2">
+                    <img id="file-preview-img" class="hidden h-12 w-12 object-cover rounded" src="" alt="">
+                    <span id="file-preview-icon" class="hidden text-xl">{% icon "document-outline" %}</span>
+                    <span id="file-preview-name" class="text-sm flex-1 truncate"></span>
+                    <button type="button" id="chat-file-remove" class="btn btn-ghost btn-sm" title="{% trans 'Remove' %}">&times;</button>
+                </div>
+                <input type="file" id="chat-file" name="file" accept="image/jpeg,image/png,image/webp,image/gif,.pdf" hidden>
                 {% endif %}
-                <button type="button"
-                        id="chat-mic"
-                        class="btn btn-ghost"
-                        title="{% trans 'Voice input' %}">
-                    {% icon "mic-outline" %}
-                </button>
-                <button type="submit"
-                        id="chat-submit"
-                        class="btn color-primary">
-                    <span id="chat-loading" class="loading loading-sm" style="display:none;"></span>
-                    <span class="when-not-loading">{% icon "send-outline" %}</span>
-                </button>
-            </div>
-        </form>
+
+                <div class="flex gap-2 items-end">
+                    <textarea
+                        name="message"
+                        id="chat-input"
+                        class="input flex-1"
+                        rows="1"
+                        placeholder="{% trans 'Type a message...' %}"
+                        style="resize: none; max-height: 120px;"></textarea>
+                    {% if can_attach %}
+                    <button type="button"
+                            id="chat-attach"
+                            class="btn btn-ghost"
+                            title="{% trans 'Attach file' %}">
+                        {% icon "attach-outline" %}
+                    </button>
+                    {% endif %}
+                    <button type="button"
+                            id="chat-mic"
+                            class="btn btn-ghost"
+                            title="{% trans 'Voice input' %}">
+                        {% icon "mic-outline" %}
+                    </button>
+                    <button type="submit"
+                            id="chat-submit"
+                            class="btn color-primary">
+                        <span id="chat-loading" class="loading loading-sm" style="display:none;"></span>
+                        <span class="when-not-loading">{% icon "send-outline" %}</span>
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
+
+<!-- Mobile sidebar overlay -->
+<div id="chat-sidebar-overlay"
+     class="fixed inset-0 bg-black/50 z-40 hidden md:hidden"
+     onclick="closeMobileSidebar()"></div>
 
 <style>
     .chat-bubble.prose { max-width: none; }
@@ -145,11 +181,57 @@
         margin-left: 1px;
     }
     @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* Sidebar styles */
+    .chat-sidebar-item.active {
+        background: var(--color-base-200);
+        font-weight: 500;
+    }
+    #chat-sidebar.mobile-open {
+        display: flex !important;
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        z-index: 50;
+        width: 280px;
+        box-shadow: 4px 0 16px rgba(0,0,0,0.15);
+    }
 </style>
 
 <script nonce="{{ csp_nonce }}">
 var RESTORE_CONVERSATION_ID = {% if restore_conversation_id %}"{{ restore_conversation_id }}"{% else %}null{% endif %};
 var LOAD_MESSAGES_URL = "{% url 'assistant:load_conversation_messages' conversation_id=0 %}".replace('/0/', '/{id}/');
 var WELCOME_HTML = document.getElementById('chat-messages').innerHTML;
+
+function loadSidebarConversation(conversationId) {
+    // Update active state in sidebar
+    document.querySelectorAll('.chat-sidebar-item').forEach(function(el) {
+        el.classList.toggle('active', el.dataset.conversationId == conversationId);
+    });
+    // Update hidden input
+    var convInput = document.getElementById('conv-id');
+    if (convInput) convInput.value = conversationId;
+    // Load messages
+    loadConversationFromServer(conversationId);
+    // Close mobile sidebar if open
+    closeMobileSidebar();
+}
+
+function closeMobileSidebar() {
+    var sidebar = document.getElementById('chat-sidebar');
+    var overlay = document.getElementById('chat-sidebar-overlay');
+    if (sidebar) sidebar.classList.remove('mobile-open');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+// Mark active conversation in sidebar on load
+(function() {
+    var activeId = {% if restore_conversation_id %}"{{ restore_conversation_id }}"{% else %}null{% endif %};
+    if (activeId) {
+        document.querySelectorAll('.chat-sidebar-item').forEach(function(el) {
+            el.classList.toggle('active', el.dataset.conversationId == activeId);
+        });
+    }
+})();
+
 {% include "assistant/partials/chat_js.html" %}
 </script>
