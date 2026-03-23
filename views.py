@@ -2547,3 +2547,19 @@ def download_file(request, file_id):
     from django.core.files.storage import default_storage
     url = default_storage.url(f.s3_key)
     return redirect(url)
+
+
+@login_required
+@require_POST
+def skip_setup(request):
+    """Skip AI setup — mark hub as configured with minimal defaults."""
+    from django.shortcuts import redirect
+    from apps.configuration.models import HubConfig, StoreConfig
+
+    hub_config = HubConfig.get_solo()
+    store_config = StoreConfig.get_solo()
+    hub_config.is_configured = True
+    hub_config.save()
+    store_config.is_configured = True
+    store_config.save()
+    return redirect('/')

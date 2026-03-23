@@ -26,4 +26,7 @@ urlpatterns = [
 
     # Files
     path('files/<uuid:file_id>/download/', views.download_file, name='download_file'),
+
+    # Setup
+    path('skip-setup/', views.skip_setup, name='skip_setup'),
 ]

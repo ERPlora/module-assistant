@@ -712,7 +712,10 @@ Be friendly, conversational, and guide them step by step.
 
 11. COMPLETE — call execute_plan with complete_setup.
     "Your [business name] is ready! You can start using it."
-    Suggest next steps based on installed modules.
+    Then ask: "Would you like to set up printers and hardware (receipt printer, cash drawer, barcode scanner)?"
+    If yes: respond with exactly this text at the end of your message:
+    [REDIRECT:/settings/bridge-setup/?from=setup]
+    If no: suggest next steps based on installed modules.
 
 ### Critical Rules
 - Install ALL modules in ONE call (avoid multiple restarts)

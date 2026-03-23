@@ -67,6 +67,14 @@
                     {% if is_setup_mode %}
                     <p>{% trans "Welcome! I'll help you set up your hub. Let's get started — tell me about your business. What kind of business do you have and where are you located?" %}</p>
                     <p class="mt-2 text-sm opacity-75">{% trans "For example: 'I have a restaurant in Madrid' or 'Hair salon in Berlin'" %}</p>
+                    <div class="mt-4 pt-3 border-t border-base-200">
+                        <form method="post" action="{% url 'assistant:skip_setup' %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-ghost btn-sm opacity-60">
+                                {% trans "Skip setup — I'll configure manually" %}
+                            </button>
+                        </form>
+                    </div>
                     {% else %}
                     <p>{% trans "Hello! I'm your AI assistant. I can help you configure your hub, manage modules, create products, employees, and more." %}</p>
                     <p class="mt-2 text-sm opacity-75">{% trans "Try asking me something like:" %}</p>

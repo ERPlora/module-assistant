@@ -245,6 +245,20 @@
 
         var indicators = content.querySelectorAll('.chat-tool-indicator');
         indicators.forEach(function(ind) { ind.remove(); });
+
+        // Detect [REDIRECT:/path] in assistant message and navigate
+        if (markdownText) {
+            var redirectMatch = markdownText.match(/\[REDIRECT:(\/[^\]]+)\]/);
+            if (redirectMatch) {
+                var url = redirectMatch[1];
+                // Remove the redirect tag from visible content
+                content.innerHTML = content.innerHTML.replace(/\[REDIRECT:\/[^\]]+\]/, '');
+                setTimeout(function() {
+                    htmx.ajax('GET', url, {target: '#main-content-area', swap: 'innerHTML'});
+                    history.pushState({}, '', url);
+                }, 2000);
+            }
+        }
     }
 
     function _renderMarkdown(text) {
