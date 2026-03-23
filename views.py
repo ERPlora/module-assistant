@@ -232,7 +232,10 @@ def chat_page(request):
 def chat_sidebar_conversations(request):
     """HTMX endpoint: load more conversations for the chat sidebar (infinite scroll)."""
     SIDEBAR_PAGE_SIZE = 20
-    offset = int(request.GET.get('offset', 0))
+    try:
+        offset = int(request.GET.get('offset', 0))
+    except (ValueError, TypeError):
+        offset = 0
 
     qs = AssistantConversation.objects.filter(
         user_id=request.session.get('local_user_id'),
@@ -1888,6 +1891,14 @@ def _call_cloud_async_with_poll(request, input_data, instructions, tools,
 
     if not cloud_request_id:
         raise CloudProxyError("No request_id returned from async endpoint")
+
+    if db_request_id:
+        try:
+            AssistantRequest.objects.filter(id=db_request_id).update(
+                cloud_request_id=cloud_request_id,
+            )
+        except Exception:
+            pass
 
     _set_progress(request_id, 'thinking', 'AI is processing...',
                   db_request_id=db_request_id)
