@@ -461,6 +461,7 @@
             body: formData,
             headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
         }).then(function(resp) {
+            if (!resp.ok) throw new Error('Server error (' + resp.status + ')');
             var convId = resp.headers.get('X-Conversation-Id');
             if (convId && convInput) convInput.value = convId;
             var usage = resp.headers.get('X-Assistant-Usage');
@@ -508,6 +509,7 @@
             body: formData,
             headers: { 'X-CSRFToken': csrfInput ? csrfInput.value : '' },
         }).then(function(resp) {
+            if (!resp.ok) throw new Error('Server error (' + resp.status + ')');
             var convId = resp.headers.get('X-Conversation-Id');
             if (convId && convInput) convInput.value = convId;
             var usage = resp.headers.get('X-Assistant-Usage');
