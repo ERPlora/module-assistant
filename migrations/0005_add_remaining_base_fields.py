@@ -1,7 +1,6 @@
-"""Add missing HubBaseModel fields to AssistantRequest and AssistantFile.
+"""Add remaining HubBaseModel fields to AssistantRequest and AssistantFile.
 
-These models inherit from HubBaseModel which includes created_by, updated_by,
-is_deleted, and deleted_at, but the 0003_async_requests migration omitted them.
+0004 only added created_by. This adds the rest: updated_by, is_deleted, deleted_at.
 """
 from django.db import migrations, models
 
@@ -9,16 +8,11 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('assistant', '0003_async_requests'),
+        ('assistant', '0004_add_missing_created_by'),
     ]
 
     operations = [
-        # AssistantRequest — missing fields from HubBaseModel
-        migrations.AddField(
-            model_name='assistantrequest',
-            name='created_by',
-            field=models.UUIDField(blank=True, help_text='UUID of the user who created this record', null=True),
-        ),
+        # AssistantRequest
         migrations.AddField(
             model_name='assistantrequest',
             name='updated_by',
@@ -34,12 +28,7 @@ class Migration(migrations.Migration):
             name='deleted_at',
             field=models.DateTimeField(blank=True, help_text='Timestamp when record was soft deleted', null=True),
         ),
-        # AssistantFile — missing fields from HubBaseModel
-        migrations.AddField(
-            model_name='assistantfile',
-            name='created_by',
-            field=models.UUIDField(blank=True, help_text='UUID of the user who created this record', null=True),
-        ),
+        # AssistantFile
         migrations.AddField(
             model_name='assistantfile',
             name='updated_by',
