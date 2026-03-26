@@ -575,27 +575,74 @@
         clearFileAttachment();
         setLoading(false);
         _streamRawText = '';
-        // Clear active state in sidebar
-        document.querySelectorAll('.chat-sidebar-item').forEach(function(el) {
-            el.classList.remove('active');
-        });
         var inp = document.getElementById('chat-input');
         if (inp) { inp.value = ''; inp.focus(); }
     }
 
-    document.addEventListener('click', function(e) {
-        if (e.target.closest('#chat-new') || e.target.closest('#chat-new-sidebar')) {
-            startNewChat();
-            if (e.target.closest('#chat-new-sidebar') && typeof closeMobileSidebar === 'function') {
-                closeMobileSidebar();
+    // -------------------------------------------------------------------------
+    // Infinite scroll up — load older messages
+    // -------------------------------------------------------------------------
+
+    var _loadingOlder = false;
+
+    function loadOlderMessages() {
+        if (_loadingOlder) return;
+        var sentinel = document.getElementById('chat-load-older');
+        if (!sentinel) return;
+
+        var beforeId = sentinel.dataset.beforeId;
+        if (!beforeId) return;
+
+        var convId = document.getElementById('conv-id');
+        if (!convId || !convId.value) return;
+
+        _loadingOlder = true;
+        var url = (typeof LOAD_MESSAGES_URL !== 'undefined' ? LOAD_MESSAGES_URL : '')
+            .replace('{id}', convId.value) + '?before_id=' + beforeId;
+
+        var msgs = document.getElementById('chat-messages');
+        var scrollHeightBefore = msgs.scrollHeight;
+
+        fetch(url, { method: 'GET', headers: { 'Accept': 'text/html' } })
+            .then(function(r) { return r.ok ? r.text() : ''; })
+            .then(function(html) {
+                if (!html) {
+                    sentinel.remove();
+                    _loadingOlder = false;
+                    return;
+                }
+                // Remove current sentinel
+                sentinel.remove();
+                // Prepend older messages at top
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                var firstChild = msgs.firstChild;
+                while (tmp.firstChild) {
+                    msgs.insertBefore(tmp.firstChild, firstChild);
+                }
+                // Preserve scroll position
+                var scrollHeightAfter = msgs.scrollHeight;
+                msgs.scrollTop += (scrollHeightAfter - scrollHeightBefore);
+                _loadingOlder = false;
+                saveChatToStorage();
+            })
+            .catch(function() { _loadingOlder = false; });
+    }
+
+    // Trigger load on scroll near top
+    (function() {
+        var msgs = document.getElementById('chat-messages');
+        if (!msgs) return;
+        msgs.addEventListener('scroll', function() {
+            if (msgs.scrollTop < 100) {
+                loadOlderMessages();
             }
-            return;
-        }
-        if (e.target.closest('#chat-sidebar-toggle')) {
-            var sidebar = document.getElementById('chat-sidebar');
-            var overlay = document.getElementById('chat-sidebar-overlay');
-            if (sidebar) sidebar.classList.add('mobile-open');
-            if (overlay) overlay.classList.remove('hidden');
+        });
+    })();
+
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('#chat-new')) {
+            startNewChat();
             return;
         }
         if (e.target.closest('#chat-attach')) { document.getElementById('chat-file').click(); return; }
@@ -685,6 +732,10 @@
         var url = (typeof LOAD_MESSAGES_URL !== 'undefined' ? LOAD_MESSAGES_URL : '').replace('{id}', conversationId);
         if (!url) return;
 
+        // Update conv-id so new messages go to the right conversation
+        var convInput = document.getElementById('conv-id');
+        if (convInput) convInput.value = conversationId;
+
         msgs.innerHTML = '<div class="flex items-center justify-center p-8"><span class="loading loading-md"></span></div>';
 
         fetch(url, {
@@ -706,9 +757,12 @@
         });
     }
 
+    // Restore: load last page of the most recent conversation
     if (typeof RESTORE_CONVERSATION_ID !== 'undefined' && RESTORE_CONVERSATION_ID) {
-        loadConversationFromServer(RESTORE_CONVERSATION_ID);
-    } else if (restoreChatFromStorage()) {
-        scrollToBottom();
+        if (!restoreChatFromStorage()) {
+            loadConversationFromServer(RESTORE_CONVERSATION_ID);
+        } else {
+            scrollToBottom();
+        }
     }
 })();

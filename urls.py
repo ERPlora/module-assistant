@@ -11,8 +11,8 @@ urlpatterns = [
     path('logs/', views.logs_page, name='logs'),
     path('plan/', views.plan_page, name='plan'),
 
-    # Sidebar (HTMX infinite scroll)
-    path('chat/conversations/', views.chat_sidebar_conversations, name='chat_sidebar_conversations'),
+    # History HTMX (infinite scroll + search)
+    path('history/load/', views.history_load_more, name='history_load_more'),
 
     # API (POST)
     path('chat/send/', views.chat, name='chat_message'),
@@ -21,8 +21,8 @@ urlpatterns = [
     path('confirm/<str:log_id>/', views.confirm_action, name='confirm_action'),
     path('cancel/<str:log_id>/', views.cancel_action, name='cancel_action'),
 
-    # History
-    path('history/messages/<int:conversation_id>/', views.load_conversation_messages, name='load_conversation_messages'),
+    # Messages (paginated, infinite scroll up)
+    path('messages/<int:conversation_id>/', views.load_conversation_messages, name='load_conversation_messages'),
 
     # Files
     path('files/<uuid:file_id>/download/', views.download_file, name='download_file'),

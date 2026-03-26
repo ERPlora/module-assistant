@@ -163,35 +163,64 @@ def _get_tier_info(hub_jwt):
     return default
 
 
+def _group_conversations_by_date(conversations, today):
+    """Group conversations into (label, items) tuples for WhatsApp-style date headers."""
+    from datetime import timedelta
+    from django.utils.translation import gettext as _
+
+    yesterday = today - timedelta(days=1)
+    groups = []
+    current_label = None
+    current_items = []
+
+    for conv in conversations:
+        conv_date = conv.updated_at.date() if hasattr(conv.updated_at, 'date') else conv.updated_at
+        if conv_date == today:
+            label = _("Today")
+        elif conv_date == yesterday:
+            label = _("Yesterday")
+        else:
+            label = conv_date.strftime("%d/%m/%Y")
+
+        if label != current_label:
+            if current_items:
+                groups.append((current_label, current_items))
+            current_label = label
+            current_items = [conv]
+        else:
+            current_items.append(conv)
+
+    if current_items:
+        groups.append((current_label, current_items))
+
+    return groups
+
+
 @login_required
 @permission_required('assistant.use_chat')
 @with_module_nav('assistant', 'chat')
 @htmx_view('assistant/pages/chat.html', 'assistant/partials/chat_panel.html')
 def chat_page(request):
-    """Main chat page."""
-    SIDEBAR_PAGE_SIZE = 20
-    qs = AssistantConversation.objects.filter(
-        user_id=request.session.get('local_user_id'),
-    ).order_by('-updated_at')
+    """Main chat page — no sidebar, messages load via infinite scroll up."""
+    # Restore a specific conversation or the most recent one
+    requested_id = request.GET.get('conversation_id')
+    active_conversation = None
 
-    conversations = list(qs[:SIDEBAR_PAGE_SIZE + 1])
-    has_more_conversations = len(conversations) > SIDEBAR_PAGE_SIZE
-    conversations = conversations[:SIDEBAR_PAGE_SIZE]
-    next_conversation_offset = SIDEBAR_PAGE_SIZE if has_more_conversations else None
-
-    last_conversation = conversations[0] if conversations else None
-
-    # Check if opening a specific conversation from history
-    requested_conversation_id = request.GET.get('conversation_id')
-    restore_conversation = None
-    if requested_conversation_id:
+    if requested_id:
         try:
-            restore_conversation = AssistantConversation.objects.get(
-                id=int(requested_conversation_id),
+            active_conversation = AssistantConversation.objects.get(
+                id=int(requested_id),
                 user_id=request.session.get('local_user_id'),
             )
         except (AssistantConversation.DoesNotExist, ValueError, TypeError):
             pass
+
+    if not active_conversation:
+        active_conversation = (
+            AssistantConversation.objects.filter(
+                user_id=request.session.get('local_user_id'),
+            ).order_by('-updated_at').first()
+        )
 
     # Detect setup context (redirected from StoreConfigCheckMiddleware)
     from apps.configuration.models import HubConfig
@@ -210,13 +239,8 @@ def chat_page(request):
     show_upgrade = tier_slug != 'enterprise'
     upgrade_url = f"{cloud_url}/dashboard/assistant/upgrade/" if show_upgrade else ''
 
-    # Always restore the most recent conversation so messages survive page reloads
-    active_conversation = restore_conversation or last_conversation
-
     return {
-        'conversations': conversations,
         'last_conversation': active_conversation,
-        'next_conversation_offset': next_conversation_offset,
         'chat_context': context,
         'is_setup_mode': context == 'setup',
         'can_attach': can_attach,
@@ -228,60 +252,94 @@ def chat_page(request):
 
 
 @login_required
-@permission_required('assistant.use_chat')
-def chat_sidebar_conversations(request):
-    """HTMX endpoint: load more conversations for the chat sidebar (infinite scroll)."""
-    SIDEBAR_PAGE_SIZE = 20
+@permission_required('assistant.view_logs')
+def history_load_more(request):
+    """HTMX endpoint: load more conversations for history (infinite scroll + search)."""
+    PAGE_SIZE = 20
     try:
         offset = int(request.GET.get('offset', 0))
     except (ValueError, TypeError):
         offset = 0
 
-    qs = AssistantConversation.objects.filter(
-        user_id=request.session.get('local_user_id'),
-    ).order_by('-updated_at')
-
-    conversations = list(qs[offset:offset + SIDEBAR_PAGE_SIZE + 1])
-    has_more = len(conversations) > SIDEBAR_PAGE_SIZE
-    conversations = conversations[:SIDEBAR_PAGE_SIZE]
-    next_offset = offset + SIDEBAR_PAGE_SIZE if has_more else None
-
-    from django.shortcuts import render as django_render
-    return django_render(request, 'assistant/partials/sidebar_conversations.html', {
-        'conversations': conversations,
-        'next_conversation_offset': next_offset,
-    })
-
-
-@login_required
-@permission_required('assistant.view_logs')
-@with_module_nav('assistant', 'history')
-@htmx_view('assistant/pages/history.html', 'assistant/partials/history_content.html')
-def history_page(request):
-    """Conversation history page with infinite scroll."""
-    PAGE_SIZE = 20
-    offset = int(request.GET.get('offset', 0))
+    search = request.GET.get('q', '').strip()
 
     qs = AssistantConversation.objects.filter(
         user_id=request.session.get('local_user_id'),
     ).order_by('-updated_at')
+
+    if search:
+        from django.db.models import Q
+        qs = qs.filter(
+            Q(title__icontains=search) |
+            Q(first_message__icontains=search) |
+            Q(summary__icontains=search)
+        )
 
     conversations = list(qs[offset:offset + PAGE_SIZE + 1])
     has_more = len(conversations) > PAGE_SIZE
     conversations = conversations[:PAGE_SIZE]
     next_offset = offset + PAGE_SIZE if has_more else None
 
-    # For HTMX infinite scroll requests, return only the list items
+    from django.utils import timezone
+    today = timezone.localdate()
+    grouped = _group_conversations_by_date(conversations, today)
+
+    from django.shortcuts import render as django_render
+    return django_render(request, 'assistant/partials/conversation_items.html', {
+        'grouped_conversations': grouped,
+        'next_offset': next_offset,
+        'search_query': search,
+    })
+
+
+@login_required
+@permission_required('assistant.view_logs')
+@with_module_nav('assistant', 'history')
+@htmx_view('assistant/pages/history.html', 'assistant/partials/conversations_content.html')
+def history_page(request):
+    """Conversation history — WhatsApp-style list with search and date groups."""
+    PAGE_SIZE = 20
+    try:
+        offset = int(request.GET.get('offset', 0))
+    except (ValueError, TypeError):
+        offset = 0
+
+    search = request.GET.get('q', '').strip()
+
+    qs = AssistantConversation.objects.filter(
+        user_id=request.session.get('local_user_id'),
+    ).order_by('-updated_at')
+
+    if search:
+        from django.db.models import Q
+        qs = qs.filter(
+            Q(title__icontains=search) |
+            Q(first_message__icontains=search) |
+            Q(summary__icontains=search)
+        )
+
+    conversations = list(qs[offset:offset + PAGE_SIZE + 1])
+    has_more = len(conversations) > PAGE_SIZE
+    conversations = conversations[:PAGE_SIZE]
+    next_offset = offset + PAGE_SIZE if has_more else None
+
+    from django.utils import timezone
+    today = timezone.localdate()
+    grouped = _group_conversations_by_date(conversations, today)
+
+    # For HTMX infinite scroll requests, return only the items
     if request.headers.get('HX-Request') and offset > 0:
         from django.shortcuts import render as django_render
-        return django_render(request, 'assistant/partials/history_items.html', {
-            'conversations': conversations,
+        return django_render(request, 'assistant/partials/conversation_items.html', {
+            'grouped_conversations': grouped,
             'next_offset': next_offset,
+            'search_query': search,
         })
 
     return {
-        'conversations': conversations,
+        'grouped_conversations': grouped,
         'next_offset': next_offset,
+        'search_query': search,
     }
 
 
@@ -289,31 +347,82 @@ def history_page(request):
 @permission_required('assistant.use_chat')
 def load_conversation_messages(request, conversation_id):
     """
-    Load conversation messages from local DB (preferred) or Cloud fallback.
+    Load conversation messages with pagination (infinite scroll up).
 
-    Called via HTMX when the user opens a conversation from history.
-    Returns the messages as rendered chat bubbles for #chat-messages.
+    Returns newest messages first in pages of MESSAGES_PAGE_SIZE.
+    The HTML is reversed so messages display in chronological order.
+    Includes a sentinel div for loading older messages when ?before_id is set.
+
+    Query params:
+        before_id: load messages older than this message ID
     """
     import markdown
 
-    # Try local DB first — survives server restarts
-    local_messages = list(
-        AssistantMessage.objects.filter(conversation_id=conversation_id)
-        .order_by('created_at')
-        .values_list('role', 'content')
-    )
+    MESSAGES_PAGE_SIZE = 10
 
-    if not local_messages:
-        # Fallback: fetch from Cloud
-        local_messages = _fetch_messages_from_cloud(conversation_id)
+    try:
+        before_id = int(request.GET.get('before_id', 0))
+    except (ValueError, TypeError):
+        before_id = 0
 
-    if not local_messages:
+    qs = AssistantMessage.objects.filter(
+        conversation_id=conversation_id,
+    ).order_by('-created_at')
+
+    if before_id:
+        qs = qs.filter(id__lt=before_id)
+
+    messages_page = list(qs[:MESSAGES_PAGE_SIZE + 1])
+    has_older = len(messages_page) > MESSAGES_PAGE_SIZE
+    messages_page = messages_page[:MESSAGES_PAGE_SIZE]
+
+    if not messages_page and not before_id:
+        # No local messages — try Cloud fallback for first load
+        cloud_messages = _fetch_messages_from_cloud(conversation_id)
+        if cloud_messages:
+            return _render_all_messages(cloud_messages)
         return HttpResponse('')
 
-    # Render each message as HTML
+    # Reverse to chronological order for rendering
+    messages_page.reverse()
+
     md_renderer = markdown.Markdown(extensions=['tables', 'fenced_code'])
     html_parts = []
-    for role, content in local_messages:
+
+    # Sentinel for loading older messages
+    if has_older:
+        oldest_id = messages_page[0].id
+        html_parts.append(
+            f'<div id="chat-load-older" '
+            f'data-before-id="{oldest_id}" '
+            f'class="flex items-center justify-center p-2">'
+            f'<span class="loading loading-sm"></span>'
+            f'</div>'
+        )
+
+    for msg in messages_page:
+        if msg.role == 'assistant' and msg.content:
+            rendered = md_renderer.convert(msg.content)
+            md_renderer.reset()
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'assistant',
+                'content': rendered,
+            }))
+        elif msg.role == 'user' and msg.content:
+            html_parts.append(render_to_string('assistant/partials/message.html', {
+                'role': 'user',
+                'content': content if (content := msg.content) else '',
+            }))
+
+    return HttpResponse(''.join(html_parts))
+
+
+def _render_all_messages(messages_list):
+    """Render a full list of (role, content) tuples as HTML (no pagination)."""
+    import markdown
+    md_renderer = markdown.Markdown(extensions=['tables', 'fenced_code'])
+    html_parts = []
+    for role, content in messages_list:
         if role == 'assistant' and content:
             rendered = md_renderer.convert(content)
             md_renderer.reset()
@@ -326,7 +435,6 @@ def load_conversation_messages(request, conversation_id):
                 'role': 'user',
                 'content': content,
             }))
-
     return HttpResponse(''.join(html_parts))
 
 
