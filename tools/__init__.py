@@ -16,6 +16,31 @@ logger = logging.getLogger(__name__)
 
 TOOL_REGISTRY = {}
 
+# Virtual modules: core tools grouped under a virtual module ID for on-demand loading.
+# Tools listed here are excluded from the default tool set and only included when
+# the virtual module is explicitly loaded (or pre-loaded by keyword matching).
+VIRTUAL_MODULES = {
+    'analytics': [
+        'get_business_dashboard',
+        'search_across_modules',
+        'get_customer_insights',
+    ],
+    'blueprints': [
+        'search_blueprint_catalog',
+        'install_blueprint',
+        'install_blueprint_products',
+        'list_available_catalogs',
+        'list_business_types',
+        'get_selected_business_types',
+    ],
+}
+
+# Reverse lookup: tool_name → virtual_module_id
+_VIRTUAL_TOOL_TO_MODULE = {}
+for _vm_id, _vm_tools in VIRTUAL_MODULES.items():
+    for _tool_name in _vm_tools:
+        _VIRTUAL_TOOL_TO_MODULE[_tool_name] = _vm_id
+
 
 def _make_strict_schema(schema: dict) -> dict:
     """
@@ -275,6 +300,10 @@ def get_tools_for_context(context='general', user=None, loaded_modules=None,
     active_modules = set(_get_active_module_ids())
     employee_read_only = user_role == 'employee'
 
+    # In setup context, auto-include blueprints virtual module
+    if context == 'setup' and loaded_modules is not None:
+        loaded_modules = loaded_modules | {'blueprints'}
+
     tools = []
     for tool in TOOL_REGISTRY.values():
         # Only include if the tool's module is active (or hub core)
@@ -284,6 +313,13 @@ def get_tools_for_context(context='general', user=None, loaded_modules=None,
         # Dynamic loading: if loaded_modules is set, filter non-core tools
         if loaded_modules is not None and tool.module_id:
             if tool.module_id not in loaded_modules:
+                continue
+
+        # Virtual module filtering: core tools (module_id=None) that belong
+        # to a virtual module are only included if that virtual module is loaded
+        if loaded_modules is not None and not tool.module_id:
+            vm_id = _VIRTUAL_TOOL_TO_MODULE.get(tool.name)
+            if vm_id and vm_id not in loaded_modules:
                 continue
 
         # Setup-only tools only in setup context
@@ -347,3 +383,163 @@ def resolve_module_dependencies(module_ids, active_modules=None):
         _resolve(mid)
 
     return resolved, dep_map
+
+
+# ---------------------------------------------------------------------------
+# Pre-loading: keyword → module mapping for automatic module loading
+# ---------------------------------------------------------------------------
+
+_PRELOAD_KEYWORDS = {
+    # Real modules
+    'inventory': [
+        'producto', 'productos', 'product', 'products', 'stock', 'inventario',
+        'catalog', 'catálogo', 'sku', 'barcode', 'código de barras', 'categoría',
+        'category', 'almacén', 'warehouse',
+    ],
+    'sales': [
+        'venta', 'ventas', 'sale', 'sales', 'ticket', 'cobrar', 'descuento',
+        'discount', 'refund', 'devolución', 'pos',
+    ],
+    'customers': [
+        'cliente', 'clientes', 'customer', 'customers', 'fidelización',
+        'loyalty', 'puntos', 'points',
+    ],
+    'orders': [
+        'pedido', 'pedidos', 'order', 'orders', 'comanda', 'comandas',
+    ],
+    'cash_register': [
+        'caja', 'cash register', 'turno', 'shift', 'arqueo', 'cierre de caja',
+        'abrir caja', 'cerrar caja', 'fondo', 'cash',
+    ],
+    'tables': [
+        'mesa', 'mesas', 'table', 'tables', 'zona', 'zone', 'sala',
+    ],
+    'reservations': [
+        'reserva', 'reservas', 'reservation', 'reservations', 'booking',
+        'bookings',
+    ],
+    'kitchen': [
+        'cocina', 'kitchen', 'estación', 'station', 'comanda cocina',
+    ],
+    'services': [
+        'servicio', 'servicios', 'service', 'services', 'cita', 'citas',
+        'appointment', 'appointments',
+    ],
+    'invoicing': [
+        'factura', 'facturas', 'invoice', 'invoices', 'facturación',
+    ],
+    'expenses': [
+        'gasto', 'gastos', 'expense', 'expenses',
+    ],
+    'schedules': [
+        'horario', 'horarios', 'schedule', 'schedules', 'turno de trabajo',
+    ],
+    'staff': [
+        'personal', 'staff', 'equipo', 'team',
+    ],
+    'accounting': [
+        'contabilidad', 'accounting', 'asiento', 'journal', 'cuenta contable',
+        'ledger',
+    ],
+    'appointments': [
+        'cita', 'citas', 'appointment', 'appointments', 'agenda',
+    ],
+    'delivery': [
+        'reparto', 'delivery', 'envío', 'shipping', 'repartidor', 'rider',
+    ],
+    'gift_cards': [
+        'tarjeta regalo', 'gift card', 'vale', 'voucher',
+    ],
+    'loyalty': [
+        'fidelización', 'loyalty', 'puntos', 'rewards',
+    ],
+    # Virtual modules
+    'analytics': [
+        'resumen', 'summary', 'dashboard', 'estadísticas', 'statistics',
+        'kpi', 'métricas', 'metrics', 'análisis', 'analysis', 'rendimiento',
+    ],
+    'blueprints': [
+        'blueprint', 'catálogo seed', 'seed', 'plantilla', 'tipo de negocio',
+    ],
+}
+
+
+def preload_modules_for_message(message, active_modules, loaded_modules):
+    """
+    Analyze a user message and return module IDs to pre-load based on keywords.
+
+    Only returns modules that are active (installed) or virtual, and not already loaded.
+    This eliminates the need for the LLM to call load_module_tools in most cases.
+    """
+    msg_lower = message.lower()
+    to_load = set()
+
+    for module_id, keywords in _PRELOAD_KEYWORDS.items():
+        if module_id in loaded_modules:
+            continue
+        # Virtual modules are always loadable; real modules must be active
+        if module_id not in VIRTUAL_MODULES and module_id not in active_modules:
+            continue
+        for kw in keywords:
+            if kw in msg_lower:
+                to_load.add(module_id)
+                break
+
+    return to_load
+
+
+# ---------------------------------------------------------------------------
+# SOP Registry: predefined workflows loaded from module ai_context.py files
+# ---------------------------------------------------------------------------
+
+SOP_REGISTRY = {}  # {sop_id: sop_dict}
+
+
+def load_module_sops(module_id):
+    """
+    Load SOPs from a module's ai_context.py into the SOP_REGISTRY.
+
+    SOPs are defined as a SOPS list variable in ai_context.py alongside CONTEXT.
+    Each SOP has triggers (bilingual), steps, and required modules.
+    """
+    try:
+        mod = importlib.import_module(f'{module_id}.ai_context')
+        sops = getattr(mod, 'SOPS', None)
+        if not sops:
+            return
+        for sop in sops:
+            sop_id = sop.get('id')
+            if sop_id:
+                SOP_REGISTRY[sop_id] = {**sop, 'source_module': module_id}
+    except (ImportError, Exception):
+        pass
+
+
+def unload_module_sops(module_id):
+    """Remove SOPs belonging to a module from the registry."""
+    to_remove = [sid for sid, sop in SOP_REGISTRY.items()
+                 if sop.get('source_module') == module_id]
+    for sid in to_remove:
+        del SOP_REGISTRY[sid]
+
+
+def match_sop(message, loaded_sops=None):
+    """
+    Match a user message against SOP triggers.
+
+    Returns the best matching SOP dict or None.
+    Checks all language trigger lists for a substring match.
+    """
+    if loaded_sops is None:
+        loaded_sops = SOP_REGISTRY
+    if not loaded_sops:
+        return None
+
+    msg_lower = message.lower()
+    for sop in loaded_sops.values():
+        triggers = sop.get('triggers', {})
+        for lang_triggers in triggers.values():
+            for trigger in lang_triggers:
+                if trigger in msg_lower:
+                    return sop
+    return None

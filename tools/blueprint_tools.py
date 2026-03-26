@@ -384,6 +384,7 @@ class ListAvailableCatalogs(AssistantTool):
         "List business types that have product catalogs available for the hub's country. "
         "Use this to discover which catalogs can be browsed or installed."
     )
+    short_description = "List business types with product catalogs available for this country."
     module_id = None  # core tool, always available
     parameters = {
         "type": "object",

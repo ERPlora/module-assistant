@@ -19,6 +19,7 @@ class SetupBusiness(AssistantTool):
     """Configure region, business info, tax, and blueprint in one call."""
 
     name = "setup_business"
+    short_description = "One-step setup: region, business info, tax, and blueprint. Use during initial config."
     description = (
         "Set up the entire business configuration in one step: "
         "regional settings (language, timezone, country, currency), "
@@ -149,6 +150,7 @@ class CreateEmployee(AssistantTool):
     """Create a single employee."""
 
     name = "create_employee"
+    short_description = "Create one employee with name, role, PIN. Use bulk_create_employees for multiple."
     description = (
         "Create a single employee with name, role, PIN, and optional email. "
         "For creating multiple employees at once, use bulk_create_employees instead."
@@ -235,6 +237,7 @@ class CreateRole(AssistantTool):
     """Create a custom role with permission wildcards."""
 
     name = "create_role"
+    short_description = "Create a custom role with permission wildcards (beyond admin/manager/employee/viewer)."
     description = (
         "Create a custom role with permission wildcards. "
         "Use this when the business needs roles beyond the default ones (admin, manager, employee, viewer)."
@@ -302,6 +305,7 @@ class BulkCreateEmployees(AssistantTool):
     """Create multiple employees in one call."""
 
     name = "bulk_create_employees"
+    short_description = "Create multiple employees at once with name, role, PIN each."
     description = (
         "Create multiple employees at once. Each employee gets a name, role, "
         "PIN code, and optional email. Use this instead of calling create_employee "
@@ -424,6 +428,7 @@ class BulkCreateServices(AssistantTool):
     """Create service categories and services in bulk."""
 
     name = "bulk_create_services"
+    short_description = "Create service categories with services (name, duration, price). Requires services module."
     description = (
         "Create service categories with their services in one call. "
         "Each category contains a list of services with name, duration, and price. "
@@ -547,6 +552,7 @@ class CompleteSetup(AssistantTool):
     """Mark hub setup as complete."""
 
     name = "complete_setup"
+    short_description = "Mark hub setup as complete. Call after all config steps are done."
     description = "Mark the hub setup as complete. Call this after all configuration steps are done."
     requires_confirmation = True
     required_permission = None
@@ -570,7 +576,55 @@ class CompleteSetup(AssistantTool):
         store_config.is_configured = True
         store_config.save()
 
+        # Generate SOP workflows based on installed modules
+        sop_count = self._generate_sops(hub_config.hub_id)
+
         return {
             "success": True,
             "message": "Setup completed. Hub is now fully configured.",
+            "sops_generated": sop_count,
         }
+
+    def _generate_sops(self, hub_id):
+        """Scan installed modules for SOPs and save summary to AssistantMemory."""
+        import importlib
+
+        from assistant.models import AssistantMemory
+        from assistant.tools import _get_active_module_ids
+
+        active = set(_get_active_module_ids())
+        all_sops = []
+
+        for mid in active:
+            try:
+                mod = importlib.import_module(f'{mid}.ai_context')
+                sops = getattr(mod, 'SOPS', None)
+                if not sops:
+                    continue
+                for sop in sops:
+                    required = sop.get('modules_required', [])
+                    if all(r in active for r in required):
+                        all_sops.append(sop)
+            except (ImportError, Exception):
+                continue
+
+        if not all_sops:
+            return 0
+
+        lines = []
+        for sop in all_sops:
+            desc_es = sop.get('description', {}).get('es', '')
+            desc_en = sop.get('description', {}).get('en', '')
+            triggers_es = ', '.join(sop.get('triggers', {}).get('es', [])[:3])
+            steps = ' → '.join(s.get('tool', '') for s in sop.get('steps', []))
+            lines.append(f"- {desc_es or desc_en} [{triggers_es}]: {steps}")
+
+        content = "Available workflows for this hub:\n" + '\n'.join(lines)
+
+        AssistantMemory.objects.update_or_create(
+            hub_id=hub_id,
+            key='sop_workflows',
+            defaults={'content': content},
+        )
+
+        return len(all_sops)

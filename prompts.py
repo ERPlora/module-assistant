@@ -29,13 +29,63 @@ def _consume_post_install(request):
     return data
 
 
-def build_system_prompt(request, context='general'):
+# Keywords that trigger conditional prompt sections (bilingual ES/EN)
+_SECTION_KEYWORDS = {
+    'business_context': [
+        'setup', 'config', 'configurar', 'business type', 'tipo de negocio',
+        'sector', 'blueprint', 'negocio', 'actividad',
+    ],
+    'data_overview': [
+        'resumen', 'summary', 'dashboard', 'cuántos', 'cuántas', 'how many',
+        'stats', 'overview', 'datos', 'totales',
+    ],
+    'roles_context': [
+        'rol', 'role', 'roles', 'permiso', 'permisos', 'permission',
+        'empleado', 'employee', 'acceso', 'access',
+    ],
+    'tax_context': [
+        'tax', 'impuesto', 'impuestos', 'iva', 'vat', 'fiscal', 'tasa',
+    ],
+    'payment_context': [
+        'pago', 'pagos', 'payment', 'cobrar', 'cash', 'card', 'tarjeta',
+        'método de pago', 'payment method',
+    ],
+}
+
+
+def _detect_sections(message, is_new_session=False):
+    """
+    Determine which conditional prompt sections to include based on message keywords.
+
+    Returns a set of section names. Sections not in this set are omitted to reduce
+    prompt size and improve model focus.
+    """
+    sections = set()
+    msg_lower = message.lower()
+
+    for section, keywords in _SECTION_KEYWORDS.items():
+        for kw in keywords:
+            if kw in msg_lower:
+                sections.add(section)
+                break
+
+    # Always include recent activity and conversation history on first message
+    if is_new_session:
+        sections.add('recent_activity')
+        sections.add('conversation_history')
+
+    return sections
+
+
+def build_system_prompt(request, context='general', message='', is_new_session=False, matched_sop=None):
     """
     Build the system prompt for the AI assistant.
 
     Args:
         request: Django request with session data
         context: 'general' or 'setup'
+        message: User message text (for conditional section detection)
+        is_new_session: Whether this is the first message in a conversation
 
     Returns:
         str: System prompt text
@@ -58,21 +108,34 @@ def build_system_prompt(request, context='general'):
     # Build prompt parts
     post_install = _consume_post_install(request)
 
+    # Detect which conditional sections to include.
+    # In setup context, include ALL sections (setup needs complete context).
+    if context == 'setup':
+        sections = None  # None = include all
+    else:
+        sections = _detect_sections(message, is_new_session)
+
     parts = [
+        # Always included
         _base_instructions(hub_config.language),
         _user_context(user_name, user_role),
         _store_context(store_config, hub_config),
-        _business_context(hub_config),
+        # Conditional
+        _business_context(hub_config) if sections is None or 'business_context' in sections else '',
+        # Always included
         _datetime_context(hub_config),
         _modules_context(module_entries),
-        _tools_context(context, request),
-        _data_overview(),
-        _roles_context(request),
-        _tax_context(),
-        _payment_context(),
+        _tools_context(context, request, matched_sop=matched_sop),
+        # Conditional
+        _data_overview() if sections is None or 'data_overview' in sections else '',
+        _roles_context(request) if sections is None or 'roles_context' in sections else '',
+        _tax_context() if sections is None or 'tax_context' in sections else '',
+        _payment_context() if sections is None or 'payment_context' in sections else '',
+        # Always included
         _memories_context(hub_config),
-        _recent_activity(user_id),
-        _conversation_history(user_id),
+        # Conditional (first message only)
+        _recent_activity(user_id) if sections is None or 'recent_activity' in sections else '',
+        _conversation_history(user_id) if sections is None or 'conversation_history' in sections else '',
     ]
 
     if context == 'setup':
@@ -256,7 +319,7 @@ def _load_module_context(module_id: str) -> str:
         return ''
 
 
-def _tools_context(context, request):
+def _tools_context(context, request, matched_sop=None):
     """Summarize available core tools and inject context for loaded modules."""
     try:
         from assistant.tools import get_tools_for_context, TOOL_REGISTRY
@@ -312,6 +375,21 @@ def _tools_context(context, request):
                 module_contexts.append(ctx)
         if module_contexts:
             lines.append('\n' + '\n\n'.join(module_contexts))
+
+        if matched_sop:
+            from apps.configuration.models import HubConfig
+            hub_config = HubConfig.get_solo()
+            lang = hub_config.language or 'en'
+            desc = matched_sop.get('description', {})
+            sop_desc = desc.get(lang, desc.get('en', desc.get('es', '')))
+            lines.append(f"\n### Suggested Workflow: {sop_desc}")
+            lines.append("Follow these steps in order:")
+            for i, step in enumerate(matched_sop.get('steps', []), 1):
+                tool_name = step.get('tool', '')
+                step_desc = step.get('description', '')
+                args_hint = f" with {step['args']}" if step.get('args') else ''
+                lines.append(f"{i}. Call `{tool_name}`{args_hint} — {step_desc}")
+            lines.append("Adapt steps based on context. Skip steps if data already available.")
 
         return '\n'.join(lines)
     except Exception as e:

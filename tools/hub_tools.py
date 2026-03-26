@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class GetHubConfig(AssistantTool):
     name = "get_hub_config"
     description = "Get current hub configuration: language, currency, timezone, country, theme, dark mode"
+    short_description = "Get hub settings: language, currency, timezone, country, theme."
     parameters = {
         "type": "object",
         "properties": {},
@@ -44,6 +45,7 @@ class GetHubConfig(AssistantTool):
 class GetStoreConfig(AssistantTool):
     name = "get_store_config"
     description = "Get store/business configuration: name, address, VAT, phone, email, tax settings"
+    short_description = "Get business info: name, address, VAT, phone, email, tax config."
     parameters = {
         "type": "object",
         "properties": {},
@@ -137,6 +139,7 @@ class ListBusinessTypes(AssistantTool):
 class GetSelectedBusinessTypes(AssistantTool):
     name = "get_selected_business_types"
     description = "Get the business types currently selected for this hub"
+    short_description = "Get this hub's selected business types."
     parameters = {
         "type": "object",
         "properties": {},
@@ -157,6 +160,7 @@ class GetSelectedBusinessTypes(AssistantTool):
 class ListModules(AssistantTool):
     name = "list_modules"
     description = "List all installed and active modules on this hub, including what each module does"
+    short_description = "List installed modules with descriptions. Use to find which module to load."
     parameters = {
         "type": "object",
         "properties": {},
@@ -282,6 +286,7 @@ class GetModuleCatalog(AssistantTool):
 class ListRoles(AssistantTool):
     name = "list_roles"
     description = "List all roles (basic, solution, custom) with their permission wildcards and expanded permission count"
+    short_description = "List all roles with their permissions. Roles: admin, manager, employee, viewer, custom."
     parameters = {
         "type": "object",
         "properties": {},
@@ -322,6 +327,7 @@ class ListRoles(AssistantTool):
 class ListEmployees(AssistantTool):
     name = "list_employees"
     description = "List all employees/users on this hub"
+    short_description = "List all employees with name, email, and role."
     parameters = {
         "type": "object",
         "properties": {},
@@ -354,6 +360,7 @@ class ListEmployees(AssistantTool):
 class ListTaxClasses(AssistantTool):
     name = "list_tax_classes"
     description = "List all tax classes/rates configured on this hub"
+    short_description = "List configured tax rates (e.g. IVA 21%, Reducido 10%)."
     parameters = {
         "type": "object",
         "properties": {},
@@ -383,6 +390,7 @@ class ListTaxClasses(AssistantTool):
 class CreateTaxClass(AssistantTool):
     name = "create_tax_class"
     description = "Create a tax class (IVA rate) on this hub. Use for setting up tax rates like General 21%, Reducido 10%, etc."
+    short_description = "Create a tax rate (e.g. IVA 21%). Requires name and rate."
     requires_confirmation = True
     parameters = {
         "type": "object",
@@ -434,6 +442,7 @@ class CreateTaxClass(AssistantTool):
 class SetTaxConfig(AssistantTool):
     name = "set_tax_config"
     description = "Set the default tax rate and tax-included setting on the store configuration"
+    short_description = "Set default tax rate and whether prices include tax."
     requires_confirmation = True
     parameters = {
         "type": "object",
@@ -471,6 +480,7 @@ class SetTaxConfig(AssistantTool):
 class UpdateStoreConfig(AssistantTool):
     name = "update_store_config"
     description = "Update store/business configuration: name, address, VAT number, phone, email, tax settings"
+    short_description = "Update business name, address, VAT, phone, email, or tax settings."
     requires_confirmation = True
     parameters = {
         "type": "object",
@@ -666,7 +676,10 @@ class LoadModuleTools(AssistantTool):
     }
 
     def execute(self, args, request):
-        from assistant.tools import TOOL_REGISTRY, _get_active_module_ids, resolve_module_dependencies
+        from assistant.tools import (
+            TOOL_REGISTRY, VIRTUAL_MODULES, _get_active_module_ids,
+            resolve_module_dependencies, load_module_sops,
+        )
 
         requested = args.get('modules', [])
         if not requested:
@@ -674,17 +687,31 @@ class LoadModuleTools(AssistantTool):
 
         active = set(_get_active_module_ids())
 
-        # Resolve dependencies automatically
-        resolved, dep_map = resolve_module_dependencies(requested, active)
+        # Separate virtual modules from real modules
+        virtual_requested = [m for m in requested if m in VIRTUAL_MODULES]
+        real_requested = [m for m in requested if m not in VIRTUAL_MODULES]
+
+        # Resolve dependencies for real modules
+        resolved, dep_map = resolve_module_dependencies(real_requested, active) if real_requested else (set(), {})
 
         not_found = [mid for mid in resolved if mid not in active]
         to_load = [mid for mid in resolved if mid in active]
 
+        # Collect tool names from real modules and load their SOPs
         loaded_names = []
         for mid in to_load:
             for tool in TOOL_REGISTRY.values():
                 if tool.module_id == mid:
                     loaded_names.append(tool.name)
+            load_module_sops(mid)
+
+        # Collect tool names from virtual modules
+        for vm_id in virtual_requested:
+            vm_tools = VIRTUAL_MODULES.get(vm_id, [])
+            for tname in vm_tools:
+                if tname in TOOL_REGISTRY:
+                    loaded_names.append(tname)
+            to_load.append(vm_id)
 
         result = {
             "loaded_tools": loaded_names,

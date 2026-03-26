@@ -501,11 +501,13 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     """
     user_id = str(user.id)
     original_message = ai_input if isinstance(ai_input, str) else ''
-    instructions = build_system_prompt(request, context)
 
     # Dynamic tool loading: restore from session so loaded state persists between messages.
     # Only keep modules that are still active (prevents stale refs after uninstall).
-    from assistant.tools import _get_active_module_ids
+    from assistant.tools import (
+        _get_active_module_ids, VIRTUAL_MODULES,
+        preload_modules_for_message, resolve_module_dependencies,
+    )
     active_module_ids = set(_get_active_module_ids())
     conversation_id = str(conversation.id)
     is_new_session = conversation.message_count == 0
@@ -518,9 +520,36 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
         session_loaded = request.session.get('assistant_loaded_modules', [])
         loaded_modules = set(session_loaded) & active_module_ids
 
+    # Pre-load modules based on message keywords (eliminates extra LLM round-trip)
+    if original_message:
+        preload = preload_modules_for_message(original_message, active_module_ids, loaded_modules)
+        if preload:
+            # Resolve dependencies for real modules (not virtual)
+            real_preload = {m for m in preload if m not in VIRTUAL_MODULES}
+            if real_preload:
+                resolved, _ = resolve_module_dependencies(real_preload, active_module_ids)
+                preload = preload | resolved
+            loaded_modules |= preload
+            request.session['assistant_loaded_modules'] = list(loaded_modules)
+            if hasattr(request.session, 'modified'):
+                request.session.modified = True
+
     user_role = request.session.get('user_role', 'employee')
     tools = get_tools_for_context(context, user, loaded_modules=loaded_modules,
                                   user_role=user_role)
+
+    # Match SOP workflow for this message
+    from assistant.tools import match_sop, load_module_sops, SOP_REGISTRY
+    matched_sop = None
+    if original_message:
+        # Load SOPs for pre-loaded modules
+        for mid in loaded_modules:
+            load_module_sops(mid)
+        matched_sop = match_sop(original_message)
+
+    # Build system prompt with dynamic sections based on message content
+    instructions = build_system_prompt(request, context, message=original_message,
+                                       is_new_session=is_new_session, matched_sop=matched_sop)
 
     response_text = ""
     pending_actions = []

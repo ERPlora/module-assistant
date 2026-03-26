@@ -21,6 +21,7 @@ class GetBusinessDashboard(AssistantTool):
         "top products/services, stock alerts, recent customers, and pending items. "
         "Only includes data from installed modules."
     )
+    short_description = "Get business dashboard: sales, top products, stock alerts, pending items."
     parameters = {
         "type": "object",
         "properties": {
@@ -151,6 +152,7 @@ class SearchAcrossModules(AssistantTool):
         "Search across products, services, customers, and invoices at once. "
         "Returns grouped results by module."
     )
+    short_description = "Search products, services, customers, invoices at once. Grouped by module."
     parameters = {
         "type": "object",
         "properties": {
@@ -259,6 +261,7 @@ class GetCustomerInsights(AssistantTool):
         "Get detailed customer analysis: purchase history, favorite products/services, "
         "total spent, visit frequency. Search by name or ID."
     )
+    short_description = "Get customer analysis: purchases, favorites, total spent, visit frequency."
     parameters = {
         "type": "object",
         "properties": {
