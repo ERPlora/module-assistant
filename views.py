@@ -2004,7 +2004,7 @@ def _error_response(message, request):
 # ============================================================================
 
 ASYNC_POLL_INTERVAL = 1.0   # seconds between polls
-ASYNC_POLL_MAX_WAIT = 300   # 5 minutes max wait
+ASYNC_POLL_MAX_WAIT = 600   # 10 minutes max wait (blueprint install can take 3-5 min per LLM call)
 
 
 def _call_cloud_async_with_poll(request, input_data, instructions, tools,
@@ -2167,9 +2167,11 @@ def _poll_cloud_async_status(cloud_request_id):
 
 def _is_async_available():
     """Check if Cloud supports async assistant (feature flag)."""
-    # For now, always try async. If the endpoint returns 404, fall back to sync.
-    # In future, this could check the /config/ response for a feature flag.
-    return True
+    # Disabled: async flow (SQS → Lambda → Aurora → polling) has reliability issues
+    # with timeouts during blueprint install. Direct sync flow (Hub → Cloud → GPT-5)
+    # is more reliable for setup and normal chat. Async can be re-enabled later
+    # for long-running operations (reports, bulk imports).
+    return False
 
 
 def _process_pdf_upload(uploaded_file, message):
