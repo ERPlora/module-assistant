@@ -301,16 +301,7 @@
 
         if (!message && !hasFile) return;
 
-        // Skip SSE for setup context — use polling path directly to avoid
-        // the broken SSE-to-fallback handoff where the message gets re-sent
-        var contextInput = form.querySelector('[name="context"]');
-        var isSetup = (contextInput && contextInput.value === 'setup') ||
-                      window.location.search.indexOf('context=setup') !== -1;
-        if (isSetup) {
-            _submitWithFallback(form, message);
-            return;
-        }
-
+        // Use polling for file uploads only (SSE doesn't support multipart)
         if (hasFile) {
             _submitWithFallback(form, message);
             return;

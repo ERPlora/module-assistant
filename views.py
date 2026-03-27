@@ -2167,11 +2167,9 @@ def _poll_cloud_async_status(cloud_request_id):
 
 def _is_async_available():
     """Check if Cloud supports async assistant (feature flag)."""
-    # Disabled: async flow (SQS → Lambda → Aurora → polling) has reliability issues
-    # with timeouts during blueprint install. Direct sync flow (Hub → Cloud → GPT-5)
-    # is more reliable for setup and normal chat. Async can be re-enabled later
-    # for long-running operations (reports, bulk imports).
-    return False
+    # Async flow used as fallback when SSE streaming fails or for file uploads.
+    # Primary flow is SSE streaming (direct Hub → Cloud → GPT-5).
+    return True
 
 
 def _process_pdf_upload(uploaded_file, message):
