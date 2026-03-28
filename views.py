@@ -638,7 +638,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
             # Resolve dependencies for real modules (not virtual)
             real_preload = {m for m in preload if m not in VIRTUAL_MODULES}
             if real_preload:
-                resolved, _ = resolve_module_dependencies(real_preload, active_module_ids)
+                resolved, _deps = resolve_module_dependencies(real_preload, active_module_ids)
                 preload = preload | resolved
             loaded_modules |= preload
             request.session['assistant_loaded_modules'] = list(loaded_modules)
@@ -1301,7 +1301,7 @@ def chat_stream(request):
         if preload:
             real_preload = {m for m in preload if m not in VIRTUAL_MODULES}
             if real_preload:
-                resolved, _ = resolve_module_dependencies(real_preload, active_module_ids)
+                resolved, _deps = resolve_module_dependencies(real_preload, active_module_ids)
                 preload = preload | resolved
             loaded_modules |= preload
             request.session['assistant_loaded_modules'] = list(loaded_modules)
@@ -1357,22 +1357,19 @@ def chat_stream(request):
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                resp.raw.decode_content = True
-                buf = b''
-                while True:
-                    ready, _, _ = select.select([resp.raw], [], [], 15)
-                    if ready:
-                        chunk = resp.raw.read(4096)
-                        if not chunk:
-                            break
-                        buf += chunk
-                        while b'\n' in buf:
-                            line_bytes, buf = buf.split(b'\n', 1)
-                            line = line_bytes.decode('utf-8', errors='replace').rstrip('\r')
-                            if not line or line.startswith(':'):
-                                continue
-                            if not line.startswith('data: '):
-                                continue
+                # Use iter_lines for SSE parsing — simpler than raw socket reads.
+                # Send keepalive before iterating to prevent CloudFront timeout.
+                import time as _time
+                last_data_time = _time.time()
+                for line in resp.iter_lines(decode_unicode=True):
+                    now = _time.time()
+                    if now - last_data_time > 15:
+                        yield ': keepalive\n\n'
+                    last_data_time = now
+                    if not line or line.startswith(':'):
+                        continue
+                    if not line.startswith('data: '):
+                        continue
                             raw = line[6:].strip()
                             if raw == '[DONE]':
                                 continue
@@ -1514,22 +1511,17 @@ def chat_stream(request):
                             except (json.JSONDecodeError, TypeError):
                                 pass
 
-                    resp.raw.decode_content = True
-                    buf = b''
-                    while True:
-                        ready, _, _ = select.select([resp.raw], [], [], 15)
-                        if ready:
-                            chunk = resp.raw.read(4096)
-                            if not chunk:
-                                break
-                            buf += chunk
-                            while b'\n' in buf:
-                                line_bytes, buf = buf.split(b'\n', 1)
-                                line = line_bytes.decode('utf-8', errors='replace').rstrip('\r')
-                                if not line or line.startswith(':'):
-                                    continue
-                                if not line.startswith('data: '):
-                                    continue
+                    import time as _time
+                    last_data_time = _time.time()
+                    for line in resp.iter_lines(decode_unicode=True):
+                        now = _time.time()
+                        if now - last_data_time > 15:
+                            yield ': keepalive\n\n'
+                        last_data_time = now
+                        if not line or line.startswith(':'):
+                            continue
+                        if not line.startswith('data: '):
+                            continue
                                 raw = line[6:].strip()
                                 if raw == '[DONE]':
                                     continue
