@@ -25,7 +25,10 @@ class TestAssistantToolBase:
         assert schema['type'] == 'function'
         assert schema['name'] == 'test_tool'
         assert schema['description'] == 'A test tool'
-        assert schema['parameters'] == tool.parameters
+        # strict mode adds additionalProperties and required
+        params = schema['parameters']
+        assert params['type'] == 'object'
+        assert 'name' in params['properties']
 
     def test_to_openai_schema_with_examples(self):
         tool = AssistantTool()

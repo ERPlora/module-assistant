@@ -28,7 +28,12 @@ class TestFormatConfirmationText:
         assert 'María García' in text
 
     def test_execute_plan(self):
-        text = format_confirmation_text('execute_plan', {'steps': [1, 2, 3]})
+        steps = [
+            {'action': 'set_regional_config', 'params': {}},
+            {'action': 'set_business_info', 'params': {'business_name': 'Test'}},
+            {'action': 'create_role', 'params': {}},
+        ]
+        text = format_confirmation_text('execute_plan', {'steps': steps})
         assert '3 steps' in text
 
     def test_toggle_sync(self):
