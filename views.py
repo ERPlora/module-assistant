@@ -1344,18 +1344,37 @@ def chat_stream(request):
                 # Inject conversation_id as first event so frontend can update its state
                 yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
 
-                # Pass-through SSE lines from Cloud, accumulating text for persistence
-                for line in resp.iter_lines(decode_unicode=True):
-                    if line:
-                        yield line + '\n\n'
-                        # Accumulate text_delta for local persistence
-                        if line.startswith('data: ') and 'text_delta' in line:
-                            try:
-                                evt = json.loads(line[6:])
-                                if evt.get('type') == 'text_delta':
-                                    accumulated_text.append(evt.get('text', ''))
-                            except (json.JSONDecodeError, TypeError):
-                                pass
+                # Pass-through SSE lines from Cloud, with keepalives to prevent
+                # CloudFront from timing out (30s origin_read_timeout).
+                # The Cloud agentic loop can pause for 10-30s between chunks
+                # while executing tool calls (blueprint install, etc.).
+                import select
+                resp.raw.decode_content = True
+                buf = b''
+                while True:
+                    # Use select with 15s timeout to send keepalives
+                    ready, _, _ = select.select([resp.raw], [], [], 15)
+                    if ready:
+                        chunk = resp.raw.read(4096)
+                        if not chunk:
+                            break  # Stream ended
+                        buf += chunk
+                        # Process complete lines
+                        while b'\n' in buf:
+                            line_bytes, buf = buf.split(b'\n', 1)
+                            line = line_bytes.decode('utf-8', errors='replace').rstrip('\r')
+                            if line:
+                                yield line + '\n\n'
+                                if line.startswith('data: ') and 'text_delta' in line:
+                                    try:
+                                        evt = json.loads(line[6:])
+                                        if evt.get('type') == 'text_delta':
+                                            accumulated_text.append(evt.get('text', ''))
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
+                    else:
+                        # No data for 15s — send keepalive to prevent CloudFront timeout
+                        yield ': keepalive\n\n'
 
         except http_requests.exceptions.Timeout:
             yield f'data: {json.dumps({"type": "error", "message": "The request took too long. Please try again with a shorter message."})}\n\n'
