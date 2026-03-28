@@ -125,7 +125,9 @@ class SetupBusiness(AssistantTool):
         if type_codes:
             try:
                 from apps.core.services.blueprint_service import BlueprintService
-                bp_result = BlueprintService.install_blueprint(hub_config, type_codes)
+                bp_result = BlueprintService.install_blueprint(
+                    hub_config, type_codes, defer_restart=True,
+                )
                 result["blueprint"] = {
                     "installed": True,
                     "modules": bp_result.get('modules_installed', []),

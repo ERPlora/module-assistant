@@ -16,6 +16,8 @@ from django.http import HttpResponse, StreamingHttpResponse
 from django.template.loader import render_to_string
 from django.views.decorators.http import require_POST
 
+from django.utils.translation import gettext as _
+
 from apps.accounts.decorators import login_required, permission_required
 from apps.modules_runtime.navigation import with_module_nav
 from apps.core.htmx import htmx_view
@@ -536,7 +538,7 @@ def _get_post_restart_message(user_id):
     """Build a user-friendly message when poll_progress finds empty cache (hub restarted).
 
     Checks the last confirmed action to tell the user what happened instead of
-    the unhelpful "Request timed out. Please try again."
+    the unhelpful generic message.
     """
     try:
         last_action = AssistantActionLog.objects.filter(
@@ -544,32 +546,32 @@ def _get_post_restart_message(user_id):
             confirmed=True,
         ).order_by('-created_at').first()
 
-        if last_action and last_action.tool_name == 'install_modules':
+        if last_action and last_action.tool_name == 'execute_plan':
             result = last_action.result or {}
-            installed = result.get('installed_count', 0)
+            installed = result.get('modules_installed', 0) or result.get('succeeded', 0)
             if last_action.success and installed > 0:
-                return (
-                    f"✅ {installed} modules were installed successfully. "
-                    "The system restarted to load them. "
-                    "Please send a new message to continue where you left off."
+                return _(
+                    "Se instalaron los módulos correctamente. "
+                    "El sistema se reinició para cargarlos. "
+                    "Envía un nuevo mensaje para continuar donde lo dejaste."
                 )
             elif result.get('errors'):
-                return (
-                    "Modules were partially installed. The system restarted to load them. "
-                    "Please send a new message to check the status."
+                return _(
+                    "Los módulos se instalaron parcialmente. El sistema se reinició para cargarlos. "
+                    "Envía un nuevo mensaje para verificar el estado."
                 )
 
         if last_action and last_action.success:
-            return (
-                f"The system restarted after completing '{last_action.tool_name}'. "
-                "Your changes were saved. Please send a new message to continue."
+            return _(
+                "El sistema se reinició tras completar la acción. "
+                "Tus cambios se guardaron. Envía un nuevo mensaje para continuar."
             )
     except Exception:
         pass
 
-    return (
-        "The system restarted while processing your request. "
-        "Your changes may have been saved. Please send a new message to continue."
+    return _(
+        "El sistema se reinició mientras procesaba tu solicitud. "
+        "Tus cambios probablemente se guardaron. Envía un nuevo mensaje para continuar."
     )
 
 
@@ -587,9 +589,10 @@ def _check_db_request_status(request):
 def run_agentic_loop(user, conversation, ai_input, context, request,
                      request_id=None, db_request_id=None):
     """
-    Run the agentic tool-calling loop.
+    Run the agentic tool-calling loop (polling/async path).
 
-    Shared between the HTMX chat view and the REST API.
+    Used by the HTMX chat view (file uploads) and plan resume flows.
+    For text-only messages, chat_stream handles the agentic loop via SSE.
 
     Args:
         user: LocalUser instance
@@ -664,14 +667,19 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     tier_info = None
     call_counts = {}  # {call_hash: count} for anti-loop detection
 
-    _set_progress(request_id, 'thinking', 'Analyzing your request...',
+    _set_progress(request_id, 'thinking', _('Analizando tu solicitud...'),
                   db_request_id=db_request_id)
 
     use_async = _is_async_available()
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
-            if use_async:
+            # Use pre-fetched SSE response on first iteration to avoid double LLM call
+            if prefetched_response is not None and iteration == 0:
+                response_data = prefetched_response
+                loop_tier_info = None
+                prefetched_response = None  # consume it
+            elif use_async:
                 response_data, loop_tier_info = _call_cloud_async_with_poll(
                     request=request,
                     input_data=ai_input,
@@ -777,7 +785,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
             # every call_id always gets a result (prevents BUG-002:
             # "No tool output found for function call" corruption).
             try:
-                _set_progress(request_id, 'tool', f'Using {tool_name}...',
+                _set_progress(request_id, 'tool', _('Usando %(tool)s...') % {'tool': tool_name},
                               db_request_id=db_request_id)
                 tool = get_tool(tool_name)
                 if not tool:
@@ -998,7 +1006,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
 
     # Fallback: if AI returned no text and no pending actions, show a message
     if not response_text and not pending_actions:
-        response_text = "Sorry, I couldn't generate a response. Please try again or rephrase your request."
+        response_text = _("No se pudo generar una respuesta. Inténtalo de nuevo o reformula tu mensaje.")
 
     return {
         'response_text': response_text,
@@ -1100,7 +1108,7 @@ def chat(request):
         return HttpResponse(
             render_to_string('assistant/partials/message.html', {
                 'role': 'assistant',
-                'content': 'Please type a message.',
+                'content': _('Escribe un mensaje.'),
             }, request=request),
         )
 
@@ -1186,26 +1194,19 @@ def chat(request):
                 pending_actions=result.get('pending_actions', []),
             )
 
-            # If install_modules flagged a restart, schedule it AFTER the
-            # result is stored so the frontend can retrieve it first.
-            if cache.get('assistant_restart_pending'):
-                cache.delete('assistant_restart_pending')
-                from apps.core.utils import schedule_server_restart
-                schedule_server_restart(delay=5)
         except AgenticLoopError as e:
             # AgenticLoopError has user-facing messages (already sanitized)
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', str(e), db_request_id=db_request.id)
         except Exception as e:
             logger.error(f"[ASSISTANT] Background error: {e}", exc_info=True)
-            # Show friendly message to user, log technical details
-            friendly_msg = "Something went wrong. Please try again or start a new conversation."
+            friendly_msg = _("Algo salió mal. Inténtalo de nuevo o abre una nueva conversación.")
             cache.set(f'assistant_result_{request_id}', {'error': friendly_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', friendly_msg, db_request_id=db_request.id)
 
     # Set initial progress before starting thread to avoid race condition
     # where first poll fires before the thread sets any progress entry
-    _set_progress(request_id, 'thinking', 'Analyzing your request...', db_request_id=db_request.id)
+    _set_progress(request_id, 'thinking', _('Analizando tu solicitud...'), db_request_id=db_request.id)
 
     # Start background thread
     thread = threading.Thread(target=_background_task, daemon=True)
@@ -1214,7 +1215,7 @@ def chat(request):
     # Return polling partial
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': 'Analyzing your request...',
+        'message': _('Analizando tu solicitud...'),
     }, request=request)
 
     response = HttpResponse(html)
@@ -1227,27 +1228,28 @@ def chat(request):
 @require_POST
 def chat_stream(request):
     """
-    SSE streaming endpoint for the chat assistant.
+    Full agentic SSE streaming endpoint — ChatGPT-like experience.
 
-    Proxies the Cloud streaming endpoint (POST /api/hubs/me/assistant/chat/stream/)
-    directly to the browser as Server-Sent Events.
+    Runs the complete agentic loop within a single SSE connection:
+    1. Streams LLM text to the browser in real-time
+    2. When the LLM emits tool calls, executes them server-side
+    3. Sends tool results back to the LLM for another round
+    4. Repeats until done or a confirmation is needed
 
-    The stream carries:
+    SSE event types:
       data: {"type": "text_delta", "text": "..."}
-      data: {"type": "function_call", "name": "...", "call_id": "...", "arguments": "..."}
-      data: {"type": "response", "id": "...", "output": [...], "usage": {...}}
+      data: {"type": "tool_start", "name": "...", "call_id": "..."}
+      data: {"type": "tool_result", "name": "...", "call_id": "...", "success": true}
+      data: {"type": "confirmation", "actions": [...]}
+      data: {"type": "conv_id", "conversation_id": "..."}
+      data: {"type": "tier_info", ...}
       data: {"type": "error", "message": "..."}
       data: [DONE]
-
-    After the stream ends (on "response" event), the frontend checks for
-    function_calls in output. If present, it falls back to the standard
-    polling flow by posting to chat_message. Otherwise the streamed text
-    is the final answer.
-
-    Returns 200 text/event-stream on success, 400/500 JSON on setup errors.
     """
     import requests as http_requests
+    import select
     from apps.configuration.models import HubConfig
+    from apps.accounts.models import LocalUser
     from django.conf import settings
 
     message = request.POST.get('message', '').strip()
@@ -1256,14 +1258,13 @@ def chat_stream(request):
 
     if not message:
         def _err():
-            yield f'data: {json.dumps({"type": "error", "message": "Please type a message."})}\n\n'
+            yield f'data: {json.dumps({"type": "error", "message": _("Escribe un mensaje.")})}\n\n'
             yield 'data: [DONE]\n\n'
         return StreamingHttpResponse(_err(), content_type='text/event-stream')
 
     user_id = request.session.get('local_user_id')
     conversation = _get_or_create_conversation(user_id, conversation_id, context)
 
-    from apps.accounts.models import LocalUser
     try:
         user = LocalUser.objects.get(id=user_id)
     except LocalUser.DoesNotExist:
@@ -1273,8 +1274,6 @@ def chat_stream(request):
         return StreamingHttpResponse(_err(), content_type='text/event-stream')
 
     _track_conversation_message(conversation, message)
-
-    # Persist user message locally
     if message:
         AssistantMessage.save_message(conversation, 'user', message)
 
@@ -1286,38 +1285,50 @@ def chat_stream(request):
         return StreamingHttpResponse(_err(), content_type='text/event-stream')
 
     base_url = getattr(settings, 'CLOUD_API_URL', 'https://erplora.com').rstrip('/')
-    instructions = build_system_prompt(request, context)
 
-    # Build tools list for the payload
-    from assistant.tools import _get_active_module_ids
+    # Dynamic tool loading
+    from assistant.tools import (
+        _get_active_module_ids, VIRTUAL_MODULES,
+        preload_modules_for_message, resolve_module_dependencies,
+        is_read_only_tool,
+    )
     active_module_ids = set(_get_active_module_ids())
-    is_new_session = conversation.message_count == 1  # just incremented above
+    is_new_session = conversation.message_count == 1
     if is_new_session:
+        request.session.pop('assistant_loaded_modules', None)
         loaded_modules = set()
     else:
         session_loaded = request.session.get('assistant_loaded_modules', [])
         loaded_modules = set(session_loaded) & active_module_ids
 
-    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules)
+    if message:
+        preload = preload_modules_for_message(message, active_module_ids, loaded_modules)
+        if preload:
+            real_preload = {m for m in preload if m not in VIRTUAL_MODULES}
+            if real_preload:
+                resolved, _ = resolve_module_dependencies(real_preload, active_module_ids)
+                preload = preload | resolved
+            loaded_modules |= preload
+            request.session['assistant_loaded_modules'] = list(loaded_modules)
 
-    payload = {
-        'input': message,
-        'instructions': instructions,
-        'conversation_id': str(conversation.id),
-        'tools': tools,
-    }
-    if is_new_session:
-        payload['new_session'] = True
-
+    user_role = request.session.get('user_role', 'employee')
+    tools = get_tools_for_context(context, user, loaded_modules=loaded_modules,
+                                  user_role=user_role)
+    instructions = build_system_prompt(request, context, message=message,
+                                       is_new_session=is_new_session)
     conversation_id_str = str(conversation.id)
+    session_data = dict(request.session)
 
-    def _proxy_stream():
-        # Send an SSE comment immediately to flush the first byte to the client.
-        # This prevents CloudFront from timing out (30s origin_read_timeout)
-        # while waiting for the Cloud to connect to the LLM provider.
-        yield ': keepalive\n\n'
-
+    def _stream_one_llm_call(payload):
+        """
+        Make one streaming call to Cloud and yield SSE events.
+        Returns (response_output, accumulated_text, function_calls, tier_info, error).
+        """
         accumulated_text = []
+        function_calls = []
+        response_output = None
+        tier_info_data = None
+        error = None
 
         try:
             with http_requests.post(
@@ -1337,62 +1348,428 @@ def chat_stream(request):
                         err_msg = err_data.get('error', f'Cloud error {resp.status_code}')
                     except Exception:
                         err_msg = f'Cloud error {resp.status_code}'
-                    yield f'data: {json.dumps({"type": "error", "message": err_msg})}\n\n'
-                    yield 'data: [DONE]\n\n'
-                    return
+                    error = err_msg
+                    return response_output, accumulated_text, function_calls, tier_info_data, error
 
-                # Inject conversation_id as first event so frontend can update its state
-                yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
+                # Extract tier info from response headers
+                tier_header = resp.headers.get('X-Assistant-Tier')
+                usage_header = resp.headers.get('X-Assistant-Usage')
+                if tier_header:
+                    tier_info_data = {'tier': tier_header}
+                    if usage_header:
+                        try:
+                            tier_info_data.update(json.loads(usage_header))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
-                # Pass-through SSE lines from Cloud, with keepalives to prevent
-                # CloudFront from timing out (30s origin_read_timeout).
-                # The Cloud agentic loop can pause for 10-30s between chunks
-                # while executing tool calls (blueprint install, etc.).
-                import select
                 resp.raw.decode_content = True
                 buf = b''
                 while True:
-                    # Use select with 15s timeout to send keepalives
                     ready, _, _ = select.select([resp.raw], [], [], 15)
                     if ready:
                         chunk = resp.raw.read(4096)
                         if not chunk:
-                            break  # Stream ended
+                            break
                         buf += chunk
-                        # Process complete lines
                         while b'\n' in buf:
                             line_bytes, buf = buf.split(b'\n', 1)
                             line = line_bytes.decode('utf-8', errors='replace').rstrip('\r')
-                            if line:
+                            if not line or line.startswith(':'):
+                                continue
+                            if not line.startswith('data: '):
+                                continue
+                            raw = line[6:].strip()
+                            if raw == '[DONE]':
+                                continue
+                            try:
+                                evt = json.loads(raw)
+                            except (json.JSONDecodeError, TypeError):
+                                continue
+                            evt_type = evt.get('type', '')
+                            if evt_type == 'text_delta':
+                                accumulated_text.append(evt.get('text', ''))
                                 yield line + '\n\n'
-                                if line.startswith('data: ') and 'text_delta' in line:
-                                    try:
-                                        evt = json.loads(line[6:])
-                                        if evt.get('type') == 'text_delta':
-                                            accumulated_text.append(evt.get('text', ''))
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
+                            elif evt_type == 'function_call':
+                                function_calls.append(evt)
+                                # Don't forward raw function_call — we'll emit tool_start instead
+                            elif evt_type == 'response':
+                                response_output = evt.get('output', [])
+                            elif evt_type == 'error':
+                                error = evt.get('message', 'Unknown error')
+                                yield line + '\n\n'
                     else:
-                        # No data for 15s — send keepalive to prevent CloudFront timeout
                         yield ': keepalive\n\n'
 
         except http_requests.exceptions.Timeout:
-            yield f'data: {json.dumps({"type": "error", "message": "The request took too long. Please try again with a shorter message."})}\n\n'
-            yield 'data: [DONE]\n\n'
+            error = _("La solicitud tardó demasiado. Inténtalo con un mensaje más corto.")
         except Exception as e:
             logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
-            yield f'data: {json.dumps({"type": "error", "message": "Connection error. Please try again."})}\n\n'
-            yield 'data: [DONE]\n\n'
+            error = _("Error de conexión. Inténtalo de nuevo.")
 
-        # Persist assistant response locally after stream completes
-        full_text = ''.join(accumulated_text)
+        return response_output, accumulated_text, function_calls, tier_info_data, error
+
+    # We use a mutable container so the inner generator can update outer state
+    state = {
+        'loaded_modules': loaded_modules,
+        'tools': tools,
+    }
+
+    def _agentic_stream():
+        yield ': keepalive\n\n'
+        yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
+
+        all_accumulated_text = []
+        ai_input = message
+        call_counts = {}
+        tier_info = None
+
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            payload = {
+                'input': ai_input,
+                'instructions': instructions,
+                'conversation_id': conversation_id_str,
+                'tools': state['tools'],
+            }
+            if is_new_session and iteration == 0:
+                payload['new_session'] = True
+
+            # Stream one LLM call — yields text_delta events to browser
+            response_output = None
+            accumulated_text = []
+            function_calls = []
+            tier_info_data = None
+            error = None
+
+            for event_or_result in _stream_one_llm_call(payload):
+                if isinstance(event_or_result, str):
+                    yield event_or_result
+                else:
+                    # This shouldn't happen since _stream_one_llm_call yields strings
+                    pass
+
+            # Retrieve return values from the generator
+            # We need to refactor — _stream_one_llm_call can't both yield AND return.
+            # Instead, use shared state via a container.
+            break  # placeholder — we need a different approach
+
+        yield 'data: [DONE]\n\n'
+
+    # The problem: Python generators can't both yield AND return values.
+    # Solution: use a shared mutable container for the non-yielded outputs.
+
+    def _agentic_stream_v2():
+        nonlocal loaded_modules, tools
+
+        yield ': keepalive\n\n'
+        yield f'data: {json.dumps({"type": "conv_id", "conversation_id": conversation_id_str})}\n\n'
+
+        all_accumulated_text = []
+        ai_input = message
+        call_counts = {}
+        tier_info = None
+        needs_restart = False
+
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            payload = {
+                'input': ai_input,
+                'instructions': instructions,
+                'conversation_id': conversation_id_str,
+                'tools': tools,
+            }
+            if is_new_session and iteration == 0:
+                payload['new_session'] = True
+
+            # Stream one LLM call — collect events and forward text to browser
+            accumulated_text = []
+            function_calls = []
+            response_output = None
+            stream_tier_info = None
+            stream_error = None
+
+            try:
+                with http_requests.post(
+                    f"{base_url}/api/hubs/me/assistant/chat/stream/",
+                    json=payload,
+                    headers={
+                        'Authorization': f'Bearer {config.hub_jwt}',
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream',
+                    },
+                    stream=True,
+                    timeout=(10, 300),
+                ) as resp:
+                    if resp.status_code != 200:
+                        try:
+                            err_data = resp.json()
+                            err_msg = err_data.get('error', f'Cloud error {resp.status_code}')
+                        except Exception:
+                            err_msg = f'Cloud error {resp.status_code}'
+                        yield f'data: {json.dumps({"type": "error", "message": err_msg})}\n\n'
+                        yield 'data: [DONE]\n\n'
+                        return
+
+                    # Extract tier info from response headers
+                    tier_header = resp.headers.get('X-Assistant-Tier')
+                    usage_header = resp.headers.get('X-Assistant-Usage')
+                    if tier_header:
+                        stream_tier_info = {'tier': tier_header}
+                        if usage_header:
+                            try:
+                                stream_tier_info.update(json.loads(usage_header))
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                    resp.raw.decode_content = True
+                    buf = b''
+                    while True:
+                        ready, _, _ = select.select([resp.raw], [], [], 15)
+                        if ready:
+                            chunk = resp.raw.read(4096)
+                            if not chunk:
+                                break
+                            buf += chunk
+                            while b'\n' in buf:
+                                line_bytes, buf = buf.split(b'\n', 1)
+                                line = line_bytes.decode('utf-8', errors='replace').rstrip('\r')
+                                if not line or line.startswith(':'):
+                                    continue
+                                if not line.startswith('data: '):
+                                    continue
+                                raw = line[6:].strip()
+                                if raw == '[DONE]':
+                                    continue
+                                try:
+                                    evt = json.loads(raw)
+                                except (json.JSONDecodeError, TypeError):
+                                    continue
+                                evt_type = evt.get('type', '')
+                                if evt_type == 'text_delta':
+                                    accumulated_text.append(evt.get('text', ''))
+                                    yield line + '\n\n'
+                                elif evt_type == 'function_call':
+                                    function_calls.append(evt)
+                                elif evt_type == 'response':
+                                    response_output = evt.get('output', [])
+                                elif evt_type == 'error':
+                                    stream_error = evt.get('message', '')
+                                    yield line + '\n\n'
+                        else:
+                            yield ': keepalive\n\n'
+
+            except http_requests.exceptions.Timeout:
+                yield f'data: {json.dumps({"type": "error", "message": _("La solicitud tardó demasiado. Inténtalo con un mensaje más corto.")})}\n\n'
+                yield 'data: [DONE]\n\n'
+                return
+            except Exception as e:
+                logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
+                yield f'data: {json.dumps({"type": "error", "message": _("Error de conexión. Inténtalo de nuevo.")})}\n\n'
+                yield 'data: [DONE]\n\n'
+                return
+
+            if stream_error:
+                yield 'data: [DONE]\n\n'
+                return
+
+            if stream_tier_info:
+                tier_info = stream_tier_info
+                yield f'data: {json.dumps({"type": "tier_info", **stream_tier_info})}\n\n'
+
+            all_accumulated_text.extend(accumulated_text)
+
+            # No function calls — we're done
+            if not function_calls:
+                break
+
+            # Execute tools server-side and build tool_results for next LLM call
+            tool_results = []
+            pending_actions = []
+            has_pending = False
+            pending_llm_message_id = ''
+
+            for fc in function_calls:
+                tool_name = fc.get('name', '')
+                call_id = fc.get('call_id', '')
+                try:
+                    tool_args = json.loads(fc.get('arguments', '{}'))
+                except json.JSONDecodeError:
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({"error": f"Malformed JSON arguments for {tool_name}"}),
+                    })
+                    continue
+
+                try:
+                    tool = get_tool(tool_name)
+                    if not tool:
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": f"Unknown tool: {tool_name}"}),
+                        })
+                        continue
+
+                    # Permission check
+                    if tool.required_permission and not user.has_perm(tool.required_permission):
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": f"Permission denied: {tool.required_permission}"}),
+                        })
+                        continue
+
+                    # Employee read-only guard
+                    if user_role == 'employee' and not is_read_only_tool(tool_name):
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": "Read-only access."}),
+                        })
+                        continue
+
+                    # Anti-loop detection
+                    ch = _call_hash(tool_name, tool_args)
+                    call_counts[ch] = call_counts.get(ch, 0) + 1
+                    if call_counts[ch] > MAX_IDENTICAL_CALLS:
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": f"Already called {tool_name} with same args."}),
+                        })
+                        continue
+
+                    # Schema validation
+                    validation_error = _validate_tool_args(tool, tool_args)
+                    if validation_error:
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({"error": f"Invalid arguments: {validation_error}"}),
+                        })
+                        continue
+
+                    # Confirmation check — stop loop, send to frontend
+                    if tool.requires_confirmation:
+                        if not pending_llm_message_id:
+                            pending_llm_message_id = function_calls[0].get('call_id', '') or uuid_mod.uuid4().hex
+                        args_with_call_id = {**tool_args, '_call_id': call_id}
+                        action_log = AssistantActionLog.objects.create(
+                            user_id=str(user.id),
+                            conversation=conversation,
+                            tool_name=tool_name,
+                            tool_args=args_with_call_id,
+                            result={},
+                            success=False,
+                            confirmed=False,
+                            llm_message_id=pending_llm_message_id,
+                        )
+                        try:
+                            confirmation_data = tool.get_confirmation_data(tool_args, request)
+                        except Exception:
+                            confirmation_data = None
+                        pending_actions.append({
+                            'log_id': str(action_log.id),
+                            'tool_name': tool_name,
+                            'tool_args': tool_args,
+                            'description': format_confirmation_text(tool_name, tool_args),
+                            'confirmation_data': confirmation_data,
+                        })
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({
+                                "status": "pending_confirmation",
+                                "message": f"Action '{tool_name}' requires user confirmation.",
+                                "action_id": str(action_log.id),
+                            }),
+                        })
+                        has_pending = True
+                        continue
+
+                    # Execute tool
+                    yield f'data: {json.dumps({"type": "tool_start", "name": tool_name, "call_id": call_id})}\n\n'
+
+                    result = tool.safe_execute(tool_args, request)
+
+                    # Dynamic tool loading
+                    if tool_name == 'load_module_tools' and isinstance(result, dict) and 'error' not in result:
+                        for mid in result.get('loaded_for', tool_args.get('modules', [])):
+                            loaded_modules.add(mid)
+                        tools = get_tools_for_context(context, user, loaded_modules=loaded_modules,
+                                                      user_role=user_role)
+                        request.session['assistant_loaded_modules'] = list(loaded_modules)
+                    elif tool_name == 'unload_module_tools' and isinstance(result, dict) and 'error' not in result:
+                        for mid in result.get('unloaded', tool_args.get('modules', [])):
+                            loaded_modules.discard(mid)
+                        tools = get_tools_for_context(context, user, loaded_modules=loaded_modules,
+                                                      user_role=user_role)
+                        request.session['assistant_loaded_modules'] = list(loaded_modules)
+
+                    is_error = isinstance(result, dict) and 'error' in result and len(result) == 1
+                    AssistantActionLog.objects.create(
+                        user_id=str(user.id),
+                        conversation=conversation,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        result=result,
+                        success=not is_error,
+                        confirmed=True,
+                        error_message=result.get('error', '') if is_error else '',
+                    )
+
+                    yield f'data: {json.dumps({"type": "tool_result", "name": tool_name, "call_id": call_id, "success": not is_error})}\n\n'
+
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps(result),
+                    })
+
+                except Exception as e:
+                    logger.error(f"[ASSISTANT STREAM] Tool {tool_name} error: {e}", exc_info=True)
+                    tool_results.append({
+                        'type': 'function_call_output',
+                        'call_id': call_id,
+                        'output': _json_dumps({"error": str(e)}),
+                    })
+                    yield f'data: {json.dumps({"type": "tool_result", "name": tool_name, "call_id": call_id, "success": False})}\n\n'
+
+            # If confirmations pending, render HTML and send via SSE
+            if has_pending:
+                from django.test import RequestFactory
+                fake_req = RequestFactory().get('/')
+                fake_req.session = session_data
+                confirmation_html_parts = []
+                for action in pending_actions:
+                    confirmation_html_parts.append(
+                        render_to_string('assistant/partials/confirmation.html', {
+                            'log_id': action['log_id'],
+                            'tool_name': action['tool_name'],
+                            'tool_args': action['tool_args'],
+                            'description': action['description'],
+                            'confirmation_data': action.get('confirmation_data'),
+                        }, request=fake_req)
+                    )
+                yield f'data: {json.dumps({"type": "confirmation", "html": "".join(confirmation_html_parts)})}\n\n'
+                break
+
+            # Feed tool results back to LLM for next iteration
+            if tool_results:
+                ai_input = tool_results
+            else:
+                break
+
+        # Persist assistant response
+        full_text = ''.join(all_accumulated_text)
         if full_text:
             try:
                 AssistantMessage.save_message(conversation, 'assistant', full_text)
             except Exception as e:
                 logger.warning(f"[ASSISTANT STREAM] Failed to persist message: {e}")
 
-    response = StreamingHttpResponse(_proxy_stream(), content_type='text/event-stream')
+        yield 'data: [DONE]\n\n'
+
+    response = StreamingHttpResponse(_agentic_stream_v2(), content_type='text/event-stream')
     response['X-Conversation-Id'] = conversation_id_str
     response['X-Accel-Buffering'] = 'no'
     response['Cache-Control'] = 'no-cache'
@@ -1434,7 +1811,7 @@ def poll_progress(request, request_id):
                     # Still in progress — show last known progress
                     return HttpResponse(render_to_string('assistant/partials/progress.html', {
                         'request_id': request_id,
-                        'message': db_req.progress_message or 'Processing...',
+                        'message': db_req.progress_message or _('Procesando...'),
                     }, request=request))
 
             if not progress:
@@ -1506,7 +1883,7 @@ def poll_progress(request, request_id):
         # Still processing — return progress partial that continues polling
         return HttpResponse(render_to_string('assistant/partials/progress.html', {
             'request_id': request_id,
-            'message': progress.get('data', 'Processing...'),
+            'message': progress.get('data', _('Procesando...')),
         }, request=request))
 
 
@@ -1530,7 +1907,7 @@ def confirm_action(request, log_id):
     except AssistantActionLog.DoesNotExist:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
-            'content': 'Action not found or already processed.',
+            'content': _('Acción no encontrada o ya procesada.'),
         }, request=request))
 
     # execute_plan runs asynchronously so per-step progress is streamed
@@ -1573,16 +1950,30 @@ def _confirm_execute_plan_async(request, action_log, user_id):
             'error': True,
         }, request=request))
 
-    _set_progress(request_id, 'tool', 'Starting plan execution...')
+    _set_progress(request_id, 'tool', _('Ejecutando plan...'))
 
     def _run_plan():
         from django.test import RequestFactory
         fake_request = RequestFactory().get('/')
         fake_request.session = session_data
+        needs_restart = False
         try:
             plan_result = execute_confirmed_action(
                 action_log, fake_request, plan_request_id=request_id,
             )
+            # Check if blueprint install flagged a deferred restart.
+            # ExecutePlan returns {results: [{result: {result: {restart_scheduled: True}}}]}
+            plan_inner = plan_result.get('result', {})
+            if isinstance(plan_inner, dict):
+                for step_res in plan_inner.get('results', []):
+                    r = step_res.get('result', {})
+                    if isinstance(r, dict):
+                        # _install_blueprint wraps BlueprintService result in 'result' key
+                        inner = r.get('result', r)
+                        if isinstance(inner, dict) and inner.get('restart_scheduled'):
+                            needs_restart = True
+                            break
+
             if plan_result['success']:
                 # Build resume_input and continue the agentic loop
                 call_id = action_log.tool_args.get('_call_id', '')
@@ -1590,12 +1981,12 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     resume_input = [{
                         'type': 'function_call_output',
                         'call_id': call_id,
-                        'output': _json_dumps(plan_result.get('result', {})),
+                        'output': _json_dumps(plan_inner),
                     }]
                 else:
                     resume_input = (
                         f"[execute_plan completed. "
-                        f"Result: {_json_dumps(plan_result.get('result', {}))}] "
+                        f"Result: {_json_dumps(plan_inner)}] "
                         f"Continue with the next steps."
                     )
                 try:
@@ -1606,23 +1997,27 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
                     _set_progress(request_id, 'complete', '')
 
-                    # Schedule restart if install_modules flagged it
-                    if cache.get('assistant_restart_pending'):
-                        cache.delete('assistant_restart_pending')
+                    # Now that result is safely stored, schedule the deferred restart
+                    if needs_restart:
                         from apps.core.utils import schedule_server_restart
                         schedule_server_restart(delay=5)
                 except AgenticLoopError as e:
                     cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
                     _set_progress(request_id, 'error', str(e))
+                    if needs_restart:
+                        from apps.core.utils import schedule_server_restart
+                        schedule_server_restart(delay=5)
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Plan resume loop error: {e}", exc_info=True)
-                    cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', 'Something went wrong.')
+                    cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', _('Algo salió mal.'))
+                    if needs_restart:
+                        from apps.core.utils import schedule_server_restart
+                        schedule_server_restart(delay=5)
             else:
                 # Plan failed — build an error message with rollback info
                 err_msg = plan_result.get('message', 'Plan execution failed.')
-                plan_exec_result = plan_result.get('result', {})
-                rolled_back = plan_exec_result.get('rolled_back', [])
+                rolled_back = plan_inner.get('rolled_back', [])
                 if rolled_back:
                     rb_names = [
                         r.get('description', r.get('action', ''))
@@ -1636,17 +2031,23 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     timeout=PROGRESS_CACHE_TIMEOUT,
                 )
                 _set_progress(request_id, 'error', err_msg)
+                if needs_restart:
+                    from apps.core.utils import schedule_server_restart
+                    schedule_server_restart(delay=5)
         except Exception as e:
             logger.error(f"[ASSISTANT] execute_plan async error: {e}", exc_info=True)
-            cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', 'Something went wrong.')
+            cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', _('Algo salió mal.'))
+            if needs_restart:
+                from apps.core.utils import schedule_server_restart
+                schedule_server_restart(delay=5)
 
     thread = threading.Thread(target=_run_plan, daemon=True)
     thread.start()
 
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': 'Executing plan...',
+        'message': _('Ejecutando plan...'),
     }, request=request)
     return HttpResponse(html)
 
@@ -1729,23 +2130,16 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
             )
             cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'complete', '')
-
-            # If install_modules flagged a restart, schedule it AFTER the
-            # result is stored so the frontend can retrieve it first.
-            if cache.get('assistant_restart_pending'):
-                cache.delete('assistant_restart_pending')
-                from apps.core.utils import schedule_server_restart
-                schedule_server_restart(delay=5)
         except AgenticLoopError as e:
             cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', str(e))
         except Exception as e:
             logger.error(f"[ASSISTANT] Resume loop error: {e}", exc_info=True)
-            cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', 'Something went wrong.')
+            cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', _('Algo salió mal.'))
 
     # Set initial progress before thread to avoid poll race condition
-    _set_progress(request_id, 'thinking', 'Continuing setup...')
+    _set_progress(request_id, 'thinking', _('Continuando configuración...'))
 
     thread = threading.Thread(target=_resume_loop, daemon=True)
     thread.start()
@@ -1753,7 +2147,7 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
     # Return a polling partial so the frontend waits for the resumed loop
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': 'Continuing setup...',
+        'message': _('Continuando configuración...'),
     }, request=request)
     return HttpResponse(html)
 
@@ -1833,8 +2227,8 @@ def cancel_action(request, log_id):
                     _set_progress(request_id, 'error', str(e))
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Cancel resume loop error: {e}", exc_info=True)
-                    cache.set(f'assistant_result_{request_id}', {'error': 'Something went wrong.'}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', 'Something went wrong.')
+                    cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', _('Algo salió mal.'))
 
             thread = threading.Thread(target=_resume_loop, daemon=True)
             thread.start()
@@ -2056,7 +2450,7 @@ def _call_cloud_async_with_poll(request, input_data, instructions, tools,
         except Exception:
             pass
 
-    _set_progress(request_id, 'thinking', 'AI is processing...',
+    _set_progress(request_id, 'thinking', _('Procesando...'),
                   db_request_id=db_request_id)
 
     elapsed = 0
@@ -2079,7 +2473,7 @@ def _call_cloud_async_with_poll(request, input_data, instructions, tools,
             raise AgenticLoopError(error_msg)
 
         if status == 'processing':
-            _set_progress(request_id, 'thinking', 'AI is thinking...',
+            _set_progress(request_id, 'thinking', _('Pensando...'),
                           db_request_id=db_request_id)
 
     raise AgenticLoopError("AI request timed out. Please try again.")
@@ -2240,16 +2634,6 @@ def _process_pdf_upload(uploaded_file, message):
 def _summarize_plan_steps(steps):
     """Build a compact human-readable summary of execute_plan steps."""
     from collections import Counter
-    # Actions with their own named summary
-    named = {
-        'set_regional_config': 'set region',
-        'set_business_info': None,  # will use business_name
-        'set_tax_config': None,     # will use rate
-        'complete_setup': 'complete setup',
-        'install_blueprint': None,  # will use type_codes
-        'install_blueprint_products': None,  # will use business_type
-    }
-    # Countable actions
     counts = Counter()
     parts = []
     seen_named = []
@@ -2260,21 +2644,21 @@ def _summarize_plan_steps(steps):
 
         if action == 'set_business_info':
             name = params.get('business_name', '')
-            seen_named.append(f"set business: {name}" if name else 'set business info')
+            seen_named.append(_("Configurar negocio: %(name)s") % {'name': name} if name else _("Configurar datos del negocio"))
         elif action == 'set_tax_config':
             rate = params.get('tax_rate', '')
-            seen_named.append(f"set tax {rate}%" if rate else 'set tax config')
+            seen_named.append(_("Configurar impuesto al %(rate)s%%") % {'rate': rate} if rate else _("Configurar impuestos"))
         elif action == 'set_regional_config':
-            seen_named.append('set region')
+            seen_named.append(_("Configurar región y formato"))
         elif action == 'install_blueprint':
             type_codes = params.get('type_codes', [])
-            label = ', '.join(type_codes) if type_codes else 'blueprint'
-            seen_named.append(f"install blueprint ({label})")
+            label = ', '.join(type_codes) if type_codes else _("plantilla")
+            seen_named.append(_("Instalar plantilla (%(label)s)") % {'label': label})
         elif action == 'install_blueprint_products':
             bt = params.get('business_type', '')
-            seen_named.append(f"import products ({bt})" if bt else 'import products')
+            seen_named.append(_("Importar productos (%(type)s)") % {'type': bt} if bt else _("Importar productos"))
         elif action == 'complete_setup':
-            seen_named.append('complete setup')
+            seen_named.append(_("Completar configuración"))
         elif action in ('create_role', 'create_employee', 'create_tax_class',
                         'create_category', 'create_product', 'create_service',
                         'create_service_category', 'create_payment_method',
@@ -2288,259 +2672,259 @@ def _summarize_plan_steps(steps):
 
     # Build count labels
     label_map = {
-        'create_role': 'role', 'create_employee': 'employee',
-        'create_tax_class': 'tax class', 'create_category': 'category',
-        'create_product': 'product', 'create_service': 'service',
-        'create_service_category': 'service category',
-        'create_payment_method': 'payment method',
-        'create_zone': 'zone', 'create_table': 'table',
-        'create_station': 'station', 'set_business_hours': 'business hours',
-        'bulk_create_zones': 'zone batch', 'bulk_create_tables': 'table batch',
-        'update_store_config': 'store update',
+        'create_role': _('rol'), 'create_employee': _('empleado'),
+        'create_tax_class': _('clase de impuesto'), 'create_category': _('categoría'),
+        'create_product': _('producto'), 'create_service': _('servicio'),
+        'create_service_category': _('categoría de servicio'),
+        'create_payment_method': _('método de pago'),
+        'create_zone': _('zona'), 'create_table': _('mesa'),
+        'create_station': _('estación'), 'set_business_hours': _('horario'),
+        'bulk_create_zones': _('lote de zonas'), 'bulk_create_tables': _('lote de mesas'),
+        'update_store_config': _('actualizar tienda'),
     }
     for action, count in counts.items():
         label = label_map.get(action, action.replace('_', ' '))
         if count == 1:
-            parts.append(label)
+            parts.append(str(label))
         else:
             parts.append(f"{count} {label}s")
 
     all_parts = seen_named + parts
     total = len(steps)
-    summary = ', '.join(all_parts) if all_parts else f"{total} steps"
-    return f"Plan ({total} steps): {summary}"
+    summary = ', '.join(all_parts) if all_parts else _("%(total)s pasos") % {'total': total}
+    return _("Plan (%(total)s pasos): %(summary)s") % {'total': total, 'summary': summary}
 
 
 def format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
         # Hub core tools
-        'update_store_config': lambda a: f"Update store: {', '.join(k for k, v in a.items() if v is not None)}",
-        'select_blocks': lambda a: f"Select blocks: {', '.join(a.get('block_slugs', []))}",
-        'enable_module': lambda a: f"Enable module: {a.get('module_id', '')}",
-        'disable_module': lambda a: f"Disable module: {a.get('module_id', '')}",
-        'create_role': lambda a: f"Create role: {a.get('display_name', a.get('name', ''))}",
-        'create_employee': lambda a: f"Create employee: {a.get('name', '')} ({a.get('role_name', '')})",
-        'create_tax_class': lambda a: f"Create tax: {a.get('name', '')} ({a.get('rate', '')}%)",
-        'set_regional_config': lambda a: f"Set region: {', '.join(f'{k}={v}' for k, v in a.items() if v is not None)}",
-        'set_business_info': lambda a: f"Set business: {a.get('business_name', '')}",
-        'set_tax_config': lambda a: f"Set tax: {a.get('tax_rate', '')}% (included: {a.get('tax_included', '')})",
-        'complete_setup_step': lambda a: "Complete hub setup",
+        'update_store_config': lambda a: _("Actualizar configuración de la tienda: %(fields)s") % {'fields': ', '.join(k for k, v in a.items() if v is not None)},
+        'select_blocks': lambda a: _("Seleccionar bloques del dashboard: %(blocks)s") % {'blocks': ', '.join(a.get('block_slugs', []))},
+        'enable_module': lambda a: _("Activar módulo: %(module)s") % {'module': a.get('module_id', '')},
+        'disable_module': lambda a: _("Desactivar módulo: %(module)s") % {'module': a.get('module_id', '')},
+        'create_role': lambda a: _("Crear rol: %(name)s") % {'name': a.get('display_name', a.get('name', ''))},
+        'create_employee': lambda a: _("Crear empleado: %(name)s (%(role)s)") % {'name': a.get('name', ''), 'role': a.get('role_name', '')},
+        'create_tax_class': lambda a: _("Crear impuesto: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
+        'set_regional_config': lambda a: _("Configurar región y formato: %(config)s") % {'config': ', '.join(f'{k}={v}' for k, v in a.items() if v is not None)},
+        'set_business_info': lambda a: _("Configurar datos del negocio: %(name)s") % {'name': a.get('business_name', '')},
+        'set_tax_config': lambda a: _("Configurar impuestos: %(rate)s%% (incluido: %(included)s)") % {'rate': a.get('tax_rate', ''), 'included': a.get('tax_included', '')},
+        'complete_setup_step': lambda a: _("Completar configuración inicial del hub"),
         'execute_plan': lambda a: _summarize_plan_steps(a.get('steps', [])),
         # Inventory
-        'create_product': lambda a: f"Create product: {a.get('name', '')} ({a.get('price', '')})",
-        'update_product': lambda a: f"Update product: {a.get('product_id', '')}",
-        'create_category': lambda a: f"Create category: {a.get('name', '')}",
-        'adjust_stock': lambda a: f"Adjust stock: {a.get('quantity', '')} units for product {a.get('product_id', '')}",
-        'bulk_adjust_stock': lambda a: f"Bulk adjust stock ({len(a.get('items', []))} products): {a.get('reason', '')}",
+        'create_product': lambda a: _("Crear producto: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
+        'update_product': lambda a: _("Actualizar producto: %(id)s") % {'id': a.get('product_id', '')},
+        'create_category': lambda a: _("Crear categoría: %(name)s") % {'name': a.get('name', '')},
+        'adjust_stock': lambda a: _("Ajustar stock: %(qty)s uds. del producto %(id)s") % {'qty': a.get('quantity', ''), 'id': a.get('product_id', '')},
+        'bulk_adjust_stock': lambda a: _("Ajustar stock masivo (%(count)s productos): %(reason)s") % {'count': len(a.get('items', [])), 'reason': a.get('reason', '')},
         # Customers
-        'create_customer': lambda a: f"Create customer: {a.get('name', '')}",
-        'update_customer': lambda a: f"Update customer: {a.get('customer_id', '')}",
+        'create_customer': lambda a: _("Crear cliente: %(name)s") % {'name': a.get('name', '')},
+        'update_customer': lambda a: _("Actualizar cliente: %(id)s") % {'id': a.get('customer_id', '')},
         # Services
-        'create_service': lambda a: f"Create service: {a.get('name', '')} ({a.get('price', '')})",
-        'create_service_category': lambda a: f"Create service category: {a.get('name', '')}",
-        'update_service': lambda a: f"Update service: {a.get('service_id', '')}",
+        'create_service': lambda a: _("Crear servicio: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
+        'create_service_category': lambda a: _("Crear categoría de servicio: %(name)s") % {'name': a.get('name', '')},
+        'update_service': lambda a: _("Actualizar servicio: %(id)s") % {'id': a.get('service_id', '')},
         # Quotes
-        'create_quote': lambda a: f"Create quote: {a.get('title', '')}",
-        'update_quote_status': lambda a: f"Update quote {a.get('quote_id', '')} → {a.get('action', '')}",
+        'create_quote': lambda a: _("Crear presupuesto: %(title)s") % {'title': a.get('title', '')},
+        'update_quote_status': lambda a: _("Cambiar estado del presupuesto %(id)s → %(action)s") % {'id': a.get('quote_id', ''), 'action': a.get('action', '')},
         # Leads
-        'create_lead': lambda a: f"Create lead: {a.get('name', '')} ({a.get('company', '')})",
-        'move_lead_stage': lambda a: f"Move lead {a.get('lead_id', '')} to stage {a.get('stage_id', '')}",
+        'create_lead': lambda a: _("Crear lead: %(name)s (%(company)s)") % {'name': a.get('name', ''), 'company': a.get('company', '')},
+        'move_lead_stage': lambda a: _("Mover lead %(id)s a la etapa %(stage)s") % {'id': a.get('lead_id', ''), 'stage': a.get('stage_id', '')},
         # Purchase Orders
-        'create_purchase_order': lambda a: f"Create purchase order for supplier {a.get('supplier_id', '')}",
+        'create_purchase_order': lambda a: _("Crear orden de compra para proveedor %(id)s") % {'id': a.get('supplier_id', '')},
         # Appointments
-        'create_appointment': lambda a: f"Book appointment: {a.get('customer_name', '')} at {a.get('start_datetime', '')}",
+        'create_appointment': lambda a: _("Reservar cita: %(customer)s el %(datetime)s") % {'customer': a.get('customer_name', ''), 'datetime': a.get('start_datetime', '')},
         # Expenses
-        'create_expense': lambda a: f"Record expense: {a.get('title', '')} ({a.get('amount', '')})",
+        'create_expense': lambda a: _("Registrar gasto: %(title)s (%(amount)s)") % {'title': a.get('title', ''), 'amount': a.get('amount', '')},
         # Projects
-        'create_project': lambda a: f"Create project: {a.get('name', '')}",
-        'log_time_entry': lambda a: f"Log {a.get('hours', '')}h on project {a.get('project_id', '')}",
+        'create_project': lambda a: _("Crear proyecto: %(name)s") % {'name': a.get('name', '')},
+        'log_time_entry': lambda a: _("Registrar %(hours)sh en el proyecto %(id)s") % {'hours': a.get('hours', ''), 'id': a.get('project_id', '')},
         # Support
-        'create_ticket': lambda a: f"Create ticket: {a.get('subject', '')}",
+        'create_ticket': lambda a: _("Crear ticket: %(subject)s") % {'subject': a.get('subject', '')},
         # Discounts
-        'create_coupon': lambda a: f"Create coupon: {a.get('code', '')} ({a.get('discount_value', '')}{a.get('discount_type', '')})",
+        'create_coupon': lambda a: _("Crear cupón: %(code)s (%(value)s%(type)s)") % {'code': a.get('code', ''), 'value': a.get('discount_value', ''), 'type': a.get('discount_type', '')},
         # Loyalty
-        'award_loyalty_points': lambda a: f"Award {a.get('points', '')} points to member {a.get('member_id', '')}",
+        'award_loyalty_points': lambda a: _("Otorgar %(points)s puntos al miembro %(id)s") % {'points': a.get('points', ''), 'id': a.get('member_id', '')},
         # Shipping
-        'create_shipment': lambda a: f"Create shipment to {a.get('recipient_name', '')}",
+        'create_shipment': lambda a: _("Crear envío para %(name)s") % {'name': a.get('recipient_name', '')},
         # Gift Cards
-        'create_gift_card': lambda a: f"Create gift card: {a.get('initial_balance', '')} value",
+        'create_gift_card': lambda a: _("Crear tarjeta regalo: valor %(balance)s") % {'balance': a.get('initial_balance', '')},
         # Analytics
-        'update_analytics_settings': lambda a: f"Update analytics settings",
+        'update_analytics_settings': lambda a: _("Actualizar configuración de analíticas"),
         # Pricing
-        'create_price_list': lambda a: f"Create price list: {a.get('name', '')}",
-        'add_price_rule': lambda a: f"Add price rule to list {a.get('price_list_id', '')}",
+        'create_price_list': lambda a: _("Crear lista de precios: %(name)s") % {'name': a.get('name', '')},
+        'add_price_rule': lambda a: _("Añadir regla de precio a la lista %(id)s") % {'id': a.get('price_list_id', '')},
         # Accounting Sync
-        'toggle_accounting_sync': lambda a: f"{'Enable' if a.get('enabled') else 'Disable'} accounting sync: {a.get('connection_id', '')}",
-        'trigger_accounting_sync': lambda a: f"Trigger accounting sync: {a.get('connection_id', '')}",
+        'toggle_accounting_sync': lambda a: _("%(action)s sincronización contable: %(id)s") % {'action': _('Activar') if a.get('enabled') else _('Desactivar'), 'id': a.get('connection_id', '')},
+        'trigger_accounting_sync': lambda a: _("Ejecutar sincronización contable: %(id)s") % {'id': a.get('connection_id', '')},
         # Reservations
-        'create_reservation': lambda a: f"Create reservation: {a.get('customer_name', '')}",
-        'update_reservation_status': lambda a: f"Update reservation {a.get('reservation_id', '')} → {a.get('status', '')}",
-        'create_time_slot': lambda a: f"Create time slot: {a.get('day_of_week', '')} {a.get('start_time', '')}-{a.get('end_time', '')}",
-        'create_blocked_date': lambda a: f"Block date: {a.get('date', '')}",
-        'update_reservation_settings': lambda a: f"Update reservation settings",
-        'create_zone': lambda a: f"Create zone: {a.get('name', '')}",
+        'create_reservation': lambda a: _("Crear reserva: %(name)s") % {'name': a.get('customer_name', '')},
+        'update_reservation_status': lambda a: _("Cambiar estado de reserva %(id)s → %(status)s") % {'id': a.get('reservation_id', ''), 'status': a.get('status', '')},
+        'create_time_slot': lambda a: _("Crear franja horaria: %(day)s %(start)s-%(end)s") % {'day': a.get('day_of_week', ''), 'start': a.get('start_time', ''), 'end': a.get('end_time', '')},
+        'create_blocked_date': lambda a: _("Bloquear fecha: %(date)s") % {'date': a.get('date', '')},
+        'update_reservation_settings': lambda a: _("Actualizar configuración de reservas"),
+        'create_zone': lambda a: _("Crear zona: %(name)s") % {'name': a.get('name', '')},
         # Tables
-        'create_table': lambda a: f"Create table: {a.get('name', '')}",
-        'update_table': lambda a: f"Update table: {a.get('table_id', '')}",
-        'bulk_create_tables': lambda a: f"Create {a.get('count', '')} tables",
-        'open_table_session': lambda a: f"Open table session: {a.get('table_id', '')}",
+        'create_table': lambda a: _("Crear mesa: %(name)s") % {'name': a.get('name', '')},
+        'update_table': lambda a: _("Actualizar mesa: %(id)s") % {'id': a.get('table_id', '')},
+        'bulk_create_tables': lambda a: _("Crear %(count)s mesas") % {'count': a.get('count', '')},
+        'open_table_session': lambda a: _("Abrir sesión de mesa: %(id)s") % {'id': a.get('table_id', '')},
         # Attendance
-        'create_attendance_record': lambda a: f"Record attendance: {a.get('employee_id', '')}",
+        'create_attendance_record': lambda a: _("Registrar asistencia: empleado %(id)s") % {'id': a.get('employee_id', '')},
         # Maintenance
-        'create_work_order': lambda a: f"Create work order: {a.get('title', a.get('description', '')[:50])}",
-        'create_maintenance_order': lambda a: f"Create maintenance order: {a.get('title', '')}",
+        'create_work_order': lambda a: _("Crear orden de trabajo: %(title)s") % {'title': a.get('title', a.get('description', '')[:50])},
+        'create_maintenance_order': lambda a: _("Crear orden de mantenimiento: %(title)s") % {'title': a.get('title', '')},
         # Online Payments
-        'create_payment_link': lambda a: f"Create payment link: {a.get('amount', '')}",
-        'create_payment_method': lambda a: f"Create payment method: {a.get('name', '')}",
+        'create_payment_link': lambda a: _("Crear enlace de pago: %(amount)s") % {'amount': a.get('amount', '')},
+        'create_payment_method': lambda a: _("Crear método de pago: %(name)s") % {'name': a.get('name', '')},
         # Accounting
-        'create_account': lambda a: f"Create account: {a.get('code', '')} {a.get('name', '')}",
-        'create_journal_entry': lambda a: f"Create journal entry: {a.get('description', '')}",
+        'create_account': lambda a: _("Crear cuenta contable: %(code)s %(name)s") % {'code': a.get('code', ''), 'name': a.get('name', '')},
+        'create_journal_entry': lambda a: _("Crear asiento contable: %(desc)s") % {'desc': a.get('description', '')},
         # Feedback
-        'create_feedback_form': lambda a: f"Create feedback form: {a.get('title', '')}",
+        'create_feedback_form': lambda a: _("Crear formulario de valoración: %(title)s") % {'title': a.get('title', '')},
         # Manufacturing
-        'create_bom': lambda a: f"Create BOM: {a.get('name', '')}",
-        'create_production_order': lambda a: f"Create production order: {a.get('bom_id', '')}",
+        'create_bom': lambda a: _("Crear lista de materiales: %(name)s") % {'name': a.get('name', '')},
+        'create_production_order': lambda a: _("Crear orden de producción: %(id)s") % {'id': a.get('bom_id', '')},
         # Reports
-        'create_report': lambda a: f"Create report: {a.get('name', '')}",
+        'create_report': lambda a: _("Crear informe: %(name)s") % {'name': a.get('name', '')},
         # Messaging
-        'create_message_template': lambda a: f"Create message template: {a.get('name', '')}",
-        'create_message_automation': lambda a: f"Create automation: {a.get('name', '')}",
+        'create_message_template': lambda a: _("Crear plantilla de mensaje: %(name)s") % {'name': a.get('name', '')},
+        'create_message_automation': lambda a: _("Crear automatización: %(name)s") % {'name': a.get('name', '')},
         # Approvals
-        'approve_approval_request': lambda a: f"Approve request: {a.get('request_id', '')}",
-        'reject_approval_request': lambda a: f"Reject request: {a.get('request_id', '')}",
+        'approve_approval_request': lambda a: _("Aprobar solicitud: %(id)s") % {'id': a.get('request_id', '')},
+        'reject_approval_request': lambda a: _("Rechazar solicitud: %(id)s") % {'id': a.get('request_id', '')},
         # Training
-        'create_training_program': lambda a: f"Create training: {a.get('name', '')}",
-        'enroll_employee_in_training': lambda a: f"Enroll employee {a.get('employee_id', '')} in training {a.get('program_id', '')}",
+        'create_training_program': lambda a: _("Crear programa de formación: %(name)s") % {'name': a.get('name', '')},
+        'enroll_employee_in_training': lambda a: _("Inscribir empleado %(emp)s en formación %(prog)s") % {'emp': a.get('employee_id', ''), 'prog': a.get('program_id', '')},
         # Returns
-        'create_return_reason': lambda a: f"Create return reason: {a.get('name', '')}",
+        'create_return_reason': lambda a: _("Crear motivo de devolución: %(name)s") % {'name': a.get('name', '')},
         # Assets
-        'create_asset': lambda a: f"Create asset: {a.get('name', '')}",
-        'create_asset_maintenance': lambda a: f"Schedule maintenance: {a.get('asset_id', '')}",
+        'create_asset': lambda a: _("Crear activo: %(name)s") % {'name': a.get('name', '')},
+        'create_asset_maintenance': lambda a: _("Programar mantenimiento del activo: %(id)s") % {'id': a.get('asset_id', '')},
         # Warehouse
-        'create_warehouse': lambda a: f"Create warehouse: {a.get('name', '')}",
-        'create_warehouse_zone': lambda a: f"Create warehouse zone: {a.get('name', '')}",
+        'create_warehouse': lambda a: _("Crear almacén: %(name)s") % {'name': a.get('name', '')},
+        'create_warehouse_zone': lambda a: _("Crear zona de almacén: %(name)s") % {'name': a.get('name', '')},
         # Facturae
-        'create_facturae_invoice': lambda a: f"Create Facturae invoice: {a.get('invoice_id', '')}",
-        'update_facturae_status': lambda a: f"Update Facturae {a.get('facturae_id', '')} → {a.get('action', '')}",
+        'create_facturae_invoice': lambda a: _("Crear factura electrónica: %(id)s") % {'id': a.get('invoice_id', '')},
+        'update_facturae_status': lambda a: _("Cambiar estado de Facturae %(id)s → %(action)s") % {'id': a.get('facturae_id', ''), 'action': a.get('action', '')},
         # Payroll
-        'create_payslip': lambda a: f"Create payslip: employee {a.get('employee_id', '')} ({a.get('period', '')})",
-        'update_payslip_status': lambda a: f"Update payslip {a.get('payslip_id', '')} → {a.get('action', '')}",
+        'create_payslip': lambda a: _("Crear nómina: empleado %(id)s (%(period)s)") % {'id': a.get('employee_id', ''), 'period': a.get('period', '')},
+        'update_payslip_status': lambda a: _("Cambiar estado de nómina %(id)s → %(action)s") % {'id': a.get('payslip_id', ''), 'action': a.get('action', '')},
         # Marketing Campaigns
-        'create_marketing_campaign': lambda a: f"Create campaign: {a.get('name', '')}",
+        'create_marketing_campaign': lambda a: _("Crear campaña: %(name)s") % {'name': a.get('name', '')},
         # Commissions
-        'create_commission_rule': lambda a: f"Create commission rule: {a.get('name', '')}",
+        'create_commission_rule': lambda a: _("Crear regla de comisión: %(name)s") % {'name': a.get('name', '')},
         # E-Sign
-        'create_signature_request': lambda a: f"Request signature: {a.get('document_name', a.get('title', ''))}",
+        'create_signature_request': lambda a: _("Solicitar firma: %(doc)s") % {'doc': a.get('document_name', a.get('title', ''))},
         # Budgets
-        'create_budget': lambda a: f"Create budget: {a.get('name', '')}",
+        'create_budget': lambda a: _("Crear presupuesto: %(name)s") % {'name': a.get('name', '')},
         # API Connect / Webhooks
-        'create_webhook': lambda a: f"Create webhook: {a.get('url', a.get('name', ''))}",
+        'create_webhook': lambda a: _("Crear webhook: %(url)s") % {'url': a.get('url', a.get('name', ''))},
         # Marketplace Connect
-        'toggle_marketplace_sync': lambda a: f"{'Enable' if a.get('enabled') else 'Disable'} marketplace sync: {a.get('connection_id', '')}",
+        'toggle_marketplace_sync': lambda a: _("%(action)s sincronización de marketplace: %(id)s") % {'action': _('Activar') if a.get('enabled') else _('Desactivar'), 'id': a.get('connection_id', '')},
         # Patient Records
-        'create_patient': lambda a: f"Create patient: {a.get('name', '')}",
-        'create_treatment': lambda a: f"Create treatment: {a.get('name', a.get('treatment_type', ''))}",
+        'create_patient': lambda a: _("Crear paciente: %(name)s") % {'name': a.get('name', '')},
+        'create_treatment': lambda a: _("Crear tratamiento: %(name)s") % {'name': a.get('name', a.get('treatment_type', ''))},
         # Surveys
-        'create_survey': lambda a: f"Create survey: {a.get('title', '')}",
+        'create_survey': lambda a: _("Crear encuesta: %(title)s") % {'title': a.get('title', '')},
         # Live Chat
-        'assign_chat_conversation': lambda a: f"Assign chat {a.get('conversation_id', '')} to agent {a.get('agent_id', '')}",
-        'close_chat_conversation': lambda a: f"Close chat conversation: {a.get('conversation_id', '')}",
-        'send_chat_message': lambda a: f"Send chat message in conversation {a.get('conversation_id', '')}",
+        'assign_chat_conversation': lambda a: _("Asignar chat %(id)s al agente %(agent)s") % {'id': a.get('conversation_id', ''), 'agent': a.get('agent_id', '')},
+        'close_chat_conversation': lambda a: _("Cerrar conversación de chat: %(id)s") % {'id': a.get('conversation_id', '')},
+        'send_chat_message': lambda a: _("Enviar mensaje en conversación %(id)s") % {'id': a.get('conversation_id', '')},
         # Recruitment
-        'create_job_position': lambda a: f"Create job position: {a.get('title', '')}",
-        'create_candidate': lambda a: f"Create candidate: {a.get('name', '')}",
+        'create_job_position': lambda a: _("Crear puesto de trabajo: %(title)s") % {'title': a.get('title', '')},
+        'create_candidate': lambda a: _("Crear candidato: %(name)s") % {'name': a.get('name', '')},
         # Multicurrency
-        'add_currency': lambda a: f"Add currency: {a.get('code', '')}",
-        'update_exchange_rate': lambda a: f"Update exchange rate: {a.get('currency_id', '')} → {a.get('rate', '')}",
+        'add_currency': lambda a: _("Añadir moneda: %(code)s") % {'code': a.get('code', '')},
+        'update_exchange_rate': lambda a: _("Actualizar tipo de cambio: %(id)s → %(rate)s") % {'id': a.get('currency_id', ''), 'rate': a.get('rate', '')},
         # Properties
-        'create_property': lambda a: f"Create property: {a.get('name', '')}",
-        'create_tenant': lambda a: f"Create tenant: {a.get('name', '')}",
-        'create_lease': lambda a: f"Create lease: property {a.get('property_id', '')}",
+        'create_property': lambda a: _("Crear propiedad: %(name)s") % {'name': a.get('name', '')},
+        'create_tenant': lambda a: _("Crear inquilino: %(name)s") % {'name': a.get('name', '')},
+        'create_lease': lambda a: _("Crear contrato de alquiler: propiedad %(id)s") % {'id': a.get('property_id', '')},
         # Tasks
-        'create_task': lambda a: f"Create task: {a.get('title', '')}",
-        'update_task_status': lambda a: f"Update task {a.get('task_id', '')} → {a.get('status', '')}",
+        'create_task': lambda a: _("Crear tarea: %(title)s") % {'title': a.get('title', '')},
+        'update_task_status': lambda a: _("Cambiar estado de tarea %(id)s → %(status)s") % {'id': a.get('task_id', ''), 'status': a.get('status', '')},
         # SII
-        'create_sii_submission': lambda a: f"Create SII submission: {a.get('submission_type', '')} ({a.get('period', '')})",
+        'create_sii_submission': lambda a: _("Crear envío SII: %(type)s (%(period)s)") % {'type': a.get('submission_type', ''), 'period': a.get('period', '')},
         # Schedules / Business Hours
-        'set_business_hours': lambda a: f"Set business hours: {a.get('day_of_week', '')}",
-        'create_special_day': lambda a: f"Create special day: {a.get('date', '')}",
-        'bulk_set_business_hours': lambda a: f"Set business hours ({len(a.get('schedules', []))} days)",
+        'set_business_hours': lambda a: _("Configurar horario comercial: %(day)s") % {'day': a.get('day_of_week', '')},
+        'create_special_day': lambda a: _("Crear día especial: %(date)s") % {'date': a.get('date', '')},
+        'bulk_set_business_hours': lambda a: _("Configurar horario comercial (%(count)s días)") % {'count': len(a.get('schedules', []))},
         # Notifications
-        'mark_notifications_read': lambda a: f"Mark notifications as read",
+        'mark_notifications_read': lambda a: _("Marcar notificaciones como leídas"),
         # Leave
-        'create_leave_request': lambda a: f"Create leave request: {a.get('leave_type', '')} ({a.get('start_date', '')} - {a.get('end_date', '')})",
-        'approve_leave_request': lambda a: f"Approve leave request: {a.get('request_id', '')}",
-        'reject_leave_request': lambda a: f"Reject leave request: {a.get('request_id', '')}",
+        'create_leave_request': lambda a: _("Crear solicitud de ausencia: %(type)s (%(start)s - %(end)s)") % {'type': a.get('leave_type', ''), 'start': a.get('start_date', ''), 'end': a.get('end_date', '')},
+        'approve_leave_request': lambda a: _("Aprobar solicitud de ausencia: %(id)s") % {'id': a.get('request_id', '')},
+        'reject_leave_request': lambda a: _("Rechazar solicitud de ausencia: %(id)s") % {'id': a.get('request_id', '')},
         # Data Export
-        'create_export_job': lambda a: f"Create export job: {a.get('export_type', '')} ({a.get('format', '')})",
+        'create_export_job': lambda a: _("Crear exportación: %(type)s (%(format)s)") % {'type': a.get('export_type', ''), 'format': a.get('format', '')},
         # Segments
-        'create_segment': lambda a: f"Create segment: {a.get('name', '')}",
+        'create_segment': lambda a: _("Crear segmento: %(name)s") % {'name': a.get('name', '')},
         # GDPR
-        'create_data_request': lambda a: f"Create GDPR request: {a.get('request_type', '')}",
+        'create_data_request': lambda a: _("Crear solicitud RGPD: %(type)s") % {'type': a.get('request_type', '')},
         # Staff
-        'create_staff_member': lambda a: f"Create staff member: {a.get('name', '')}",
-        'create_staff_role': lambda a: f"Create staff role: {a.get('name', '')}",
-        'create_time_off_request': lambda a: f"Create time off request: {a.get('staff_id', '')}",
-        'assign_service_to_staff': lambda a: f"Assign service {a.get('service_id', '')} to staff {a.get('staff_id', '')}",
+        'create_staff_member': lambda a: _("Crear miembro del equipo: %(name)s") % {'name': a.get('name', '')},
+        'create_staff_role': lambda a: _("Crear rol de equipo: %(name)s") % {'name': a.get('name', '')},
+        'create_time_off_request': lambda a: _("Crear solicitud de tiempo libre: %(id)s") % {'id': a.get('staff_id', '')},
+        'assign_service_to_staff': lambda a: _("Asignar servicio %(service)s al empleado %(staff)s") % {'service': a.get('service_id', ''), 'staff': a.get('staff_id', '')},
         # Students / Course
-        'create_student': lambda a: f"Create student: {a.get('name', '')}",
-        'create_enrollment': lambda a: f"Create enrollment: student {a.get('student_id', '')}",
-        'create_course': lambda a: f"Create course: {a.get('name', '')}",
+        'create_student': lambda a: _("Crear alumno: %(name)s") % {'name': a.get('name', '')},
+        'create_enrollment': lambda a: _("Crear matrícula: alumno %(id)s") % {'id': a.get('student_id', '')},
+        'create_course': lambda a: _("Crear curso: %(name)s") % {'name': a.get('name', '')},
         # Fleet
-        'create_vehicle': lambda a: f"Create vehicle: {a.get('name', a.get('plate_number', ''))}",
-        'create_fuel_log': lambda a: f"Log fuel: vehicle {a.get('vehicle_id', '')}",
+        'create_vehicle': lambda a: _("Crear vehículo: %(name)s") % {'name': a.get('name', a.get('plate_number', ''))},
+        'create_fuel_log': lambda a: _("Registrar repostaje: vehículo %(id)s") % {'id': a.get('vehicle_id', '')},
         # Referrals
-        'create_referral': lambda a: f"Create referral: {a.get('referrer_name', a.get('name', ''))}",
+        'create_referral': lambda a: _("Crear referido: %(name)s") % {'name': a.get('referrer_name', a.get('name', ''))},
         # Tax
-        'create_tax_rate': lambda a: f"Create tax rate: {a.get('name', '')} ({a.get('rate', '')}%)",
+        'create_tax_rate': lambda a: _("Crear tipo impositivo: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
         # Document Templates
-        'create_document_template': lambda a: f"Create template: {a.get('name', '')}",
+        'create_document_template': lambda a: _("Crear plantilla de documento: %(name)s") % {'name': a.get('name', '')},
         # Contracts
-        'create_contract': lambda a: f"Create contract: {a.get('title', '')}",
-        'update_contract_status': lambda a: f"Update contract {a.get('contract_id', '')} → {a.get('status', '')}",
+        'create_contract': lambda a: _("Crear contrato: %(title)s") % {'title': a.get('title', '')},
+        'update_contract_status': lambda a: _("Cambiar estado del contrato %(id)s → %(status)s") % {'id': a.get('contract_id', ''), 'status': a.get('status', '')},
         # Cash Register
-        'create_cash_register': lambda a: f"Create cash register: {a.get('name', '')}",
-        'close_cash_session': lambda a: f"Close cash session: {a.get('session_id', '')} (closing balance: {a.get('closing_balance', '')})",
+        'create_cash_register': lambda a: _("Crear caja registradora: %(name)s") % {'name': a.get('name', '')},
+        'close_cash_session': lambda a: _("Cerrar sesión de caja: %(id)s (saldo: %(balance)s)") % {'id': a.get('session_id', ''), 'balance': a.get('closing_balance', '')},
         # Orders / Kitchen
-        'create_order': lambda a: f"Create order: {a.get('table_id', a.get('customer_name', ''))}",
-        'update_order_status': lambda a: f"Update order {a.get('order_id', '')} → {a.get('status', '')}",
-        'create_kitchen_station': lambda a: f"Create kitchen station: {a.get('name', '')}",
-        'set_station_routing': lambda a: f"Set station routing: {a.get('station_id', '')}",
-        'update_orders_settings': lambda a: f"Update orders settings",
-        'bump_order_item': lambda a: f"Bump order item: {a.get('item_id', '')}",
-        'bump_order': lambda a: f"Bump order: {a.get('order_id', '')}",
-        'recall_order': lambda a: f"Recall order: {a.get('order_id', '')}",
-        'update_kitchen_settings': lambda a: f"Update kitchen settings",
+        'create_order': lambda a: _("Crear pedido: %(ref)s") % {'ref': a.get('table_id', a.get('customer_name', ''))},
+        'update_order_status': lambda a: _("Cambiar estado del pedido %(id)s → %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
+        'create_kitchen_station': lambda a: _("Crear estación de cocina: %(name)s") % {'name': a.get('name', '')},
+        'set_station_routing': lambda a: _("Configurar enrutamiento de estación: %(id)s") % {'id': a.get('station_id', '')},
+        'update_orders_settings': lambda a: _("Actualizar configuración de pedidos"),
+        'bump_order_item': lambda a: _("Marcar como listo: artículo %(id)s") % {'id': a.get('item_id', '')},
+        'bump_order': lambda a: _("Marcar pedido como listo: %(id)s") % {'id': a.get('order_id', '')},
+        'recall_order': lambda a: _("Recuperar pedido: %(id)s") % {'id': a.get('order_id', '')},
+        'update_kitchen_settings': lambda a: _("Actualizar configuración de cocina"),
         # Email Marketing
-        'create_email_template': lambda a: f"Create email template: {a.get('name', '')}",
+        'create_email_template': lambda a: _("Crear plantilla de email: %(name)s") % {'name': a.get('name', '')},
         # Knowledge Base
-        'create_kb_category': lambda a: f"Create KB category: {a.get('name', '')}",
-        'create_kb_article': lambda a: f"Create KB article: {a.get('title', '')}",
+        'create_kb_category': lambda a: _("Crear categoría de base de conocimiento: %(name)s") % {'name': a.get('name', '')},
+        'create_kb_article': lambda a: _("Crear artículo de ayuda: %(title)s") % {'title': a.get('title', '')},
         # Quality
-        'create_inspection': lambda a: f"Create inspection: {a.get('name', a.get('title', ''))}",
+        'create_inspection': lambda a: _("Crear inspección: %(name)s") % {'name': a.get('name', a.get('title', ''))},
         # E-commerce
-        'update_online_order_status': lambda a: f"Update online order {a.get('order_id', '')} → {a.get('status', '')}",
+        'update_online_order_status': lambda a: _("Cambiar estado del pedido online %(id)s → %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
         # Subscriptions
-        'create_subscription': lambda a: f"Create subscription: {a.get('customer_id', '')}",
-        'update_subscription_status': lambda a: f"Update subscription {a.get('subscription_id', '')} → {a.get('status', '')}",
+        'create_subscription': lambda a: _("Crear suscripción: cliente %(id)s") % {'id': a.get('customer_id', '')},
+        'update_subscription_status': lambda a: _("Cambiar estado de suscripción %(id)s → %(status)s") % {'id': a.get('subscription_id', ''), 'status': a.get('status', '')},
         # Invoicing
-        'create_invoice': lambda a: f"Create invoice: {a.get('customer_id', '')}",
-        'update_invoice_status': lambda a: f"Update invoice {a.get('invoice_id', '')} → {a.get('action', a.get('status', ''))}",
+        'create_invoice': lambda a: _("Crear factura: cliente %(id)s") % {'id': a.get('customer_id', '')},
+        'update_invoice_status': lambda a: _("Cambiar estado de factura %(id)s → %(action)s") % {'id': a.get('invoice_id', ''), 'action': a.get('action', a.get('status', ''))},
         # Rentals
-        'create_rental_item': lambda a: f"Create rental item: {a.get('name', '')}",
-        'create_rental': lambda a: f"Create rental: {a.get('customer_id', '')}",
+        'create_rental_item': lambda a: _("Crear artículo de alquiler: %(name)s") % {'name': a.get('name', '')},
+        'create_rental': lambda a: _("Crear alquiler: cliente %(id)s") % {'id': a.get('customer_id', '')},
         # File Manager
-        'create_folder': lambda a: f"Create folder: {a.get('name', '')}",
+        'create_folder': lambda a: _("Crear carpeta: %(name)s") % {'name': a.get('name', '')},
         # Online Booking
-        'update_booking_status': lambda a: f"Update booking {a.get('booking_id', '')} → {a.get('action', '')}",
-        'create_online_booking': lambda a: f"Create booking: {a.get('customer_name', '')} on {a.get('date', '')}",
+        'update_booking_status': lambda a: _("Cambiar estado de reserva online %(id)s → %(action)s") % {'id': a.get('booking_id', ''), 'action': a.get('action', '')},
+        'create_online_booking': lambda a: _("Crear reserva online: %(name)s el %(date)s") % {'name': a.get('customer_name', ''), 'date': a.get('date', '')},
         # VoIP
-        'add_call_notes': lambda a: f"Add notes to call {a.get('call_id', '')}",
+        'add_call_notes': lambda a: _("Añadir notas a la llamada %(id)s") % {'id': a.get('call_id', '')},
         # Bank Sync
-        'create_bank_account': lambda a: f"Create bank account: {a.get('name', '')}",
+        'create_bank_account': lambda a: _("Crear cuenta bancaria: %(name)s") % {'name': a.get('name', '')},
         # Bulk operations
-        'bulk_create_employees': lambda a: f"Create {len(a.get('employees', []))} employees: {', '.join(e.get('first_name', '') + ' ' + e.get('last_name', '') for e in a.get('employees', []))}",
+        'bulk_create_employees': lambda a: _("Crear %(count)s empleados: %(names)s") % {'count': len(a.get('employees', [])), 'names': ', '.join(e.get('first_name', '') + ' ' + e.get('last_name', '') for e in a.get('employees', []))},
     }
 
     formatter = descriptions.get(tool_name)

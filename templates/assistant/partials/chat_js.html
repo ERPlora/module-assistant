@@ -148,7 +148,7 @@
         return div;
     }
 
-    function appendToolIndicator(toolName) {
+    function appendToolIndicator(toolName, callId) {
         var bubble = document.getElementById('chat-streaming-bubble');
         if (!bubble) {
             var msgs = document.getElementById('chat-messages');
@@ -166,11 +166,21 @@
 
         var indicator = document.createElement('div');
         indicator.className = 'chat-tool-indicator';
+        indicator.id = callId ? ('tool-' + callId) : '';
         indicator.innerHTML = '<span class="loading loading-sm"></span><span>' +
             _formatToolName(toolName) + '</span>';
         indicator.dataset.toolName = toolName;
         content.appendChild(indicator);
         scrollToBottom();
+    }
+
+    function markToolDone(callId, success) {
+        var indicator = callId ? document.getElementById('tool-' + callId) : null;
+        if (!indicator) return;
+        var icon = success ? '&#10003;' : '&#10007;';
+        var cls = success ? 'opacity-50' : 'color-error opacity-75';
+        indicator.innerHTML = '<span class="' + cls + '">' + icon + ' ' +
+            _formatToolName(indicator.dataset.toolName) + '</span>';
     }
 
     function _formatToolName(name) {
@@ -330,8 +340,6 @@
 
         appendTypingBubble();
 
-        var hasFunctionCalls = false;
-        var fullResponseOutput = null;
         var streamFailed = false;
 
         fetch(streamUrl, {
@@ -360,18 +368,31 @@
                         if (convInput) convInput.value = evt.conversation_id;
                     } else if (evt.type === 'text_delta') {
                         appendTextDelta(evt.text || '');
-                    } else if (evt.type === 'function_call') {
-                        hasFunctionCalls = true;
-                        appendToolIndicator(evt.name || '');
-                    } else if (evt.type === 'response') {
-                        fullResponseOutput = evt.output || [];
-                        var usage = evt.usage;
-                        if (usage) updateTierInfo(usage);
+                    } else if (evt.type === 'tool_start') {
+                        appendToolIndicator(evt.name || '', evt.call_id || '');
+                    } else if (evt.type === 'tool_result') {
+                        markToolDone(evt.call_id || '', evt.success !== false);
+                    } else if (evt.type === 'tier_info') {
+                        updateTierInfo(evt);
+                    } else if (evt.type === 'confirmation') {
+                        // Finalize any text before showing confirmations
+                        finalizeStreamBubble(_streamRawText);
+                        _streamRawText = '';
+                        // Inject pre-rendered confirmation HTML
+                        var html = evt.html || '';
+                        var msgs = document.getElementById('chat-messages');
+                        if (msgs && html) {
+                            var tmp = document.createElement('div');
+                            tmp.innerHTML = html;
+                            while (tmp.firstChild) msgs.appendChild(tmp.firstChild);
+                            if (window.htmx) htmx.process(msgs);
+                            scrollToBottom();
+                        }
                     } else if (evt.type === 'error') {
                         streamFailed = true;
                         var bubble = document.getElementById('chat-streaming-bubble');
                         if (bubble) bubble.remove();
-                        appendErrorBubble(evt.message || 'An error occurred.');
+                        appendErrorBubble(evt.message || '{% trans "Algo salió mal." %}');
                     }
                 } catch(e) {}
             }
@@ -395,32 +416,21 @@
                 buffer = '';
             }
 
-            if (streamFailed) {
-                setLoading(false);
-                saveChatToStorage();
-                var inp2 = document.getElementById('chat-input');
-                if (inp2) inp2.focus();
-                return;
-            }
-
-            if (hasFunctionCalls) {
-                var bubble = document.getElementById('chat-streaming-bubble');
-                if (bubble) bubble.remove();
-                _streamRawText = '';
-                _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
-            } else {
+            if (!streamFailed) {
                 finalizeStreamBubble(_streamRawText);
-                setLoading(false);
-                clearFileAttachment();
-                saveChatToStorage();
-                var inp2 = document.getElementById('chat-input');
-                if (inp2) inp2.focus();
             }
+            setLoading(false);
+            clearFileAttachment();
+            saveChatToStorage();
+            scrollToBottom();
+            var inp2 = document.getElementById('chat-input');
+            if (inp2) inp2.focus();
 
         }).catch(function(err) {
             var bubble = document.getElementById('chat-streaming-bubble');
             if (bubble) bubble.remove();
             _streamRawText = '';
+            // Full fallback to polling path (e.g. network error)
             _submitFallbackWithMessage(form, message, convInput ? convInput.value : '');
         });
     }
@@ -478,7 +488,7 @@
         });
     }
 
-    function _submitFallbackWithMessage(form, message, conversationId) {
+    function _submitFallbackWithMessage(form, message, conversationId, sseResponseOutput) {
         setLoading(true);
         _streamRawText = '';
 
@@ -494,6 +504,13 @@
         formData.append('conversation_id', conversationId || (convInput ? convInput.value : ''));
         formData.append('context', contextInput ? contextInput.value : 'general');
         if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
+
+        // Pass pre-fetched SSE response to avoid double LLM call
+        if (sseResponseOutput) {
+            try {
+                formData.append('sse_response', JSON.stringify({output: sseResponseOutput}));
+            } catch(e) {}
+        }
 
         fetch(fallbackUrl, {
             method: 'POST',

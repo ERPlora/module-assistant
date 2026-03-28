@@ -843,6 +843,7 @@ class ExecutePlan(AssistantTool):
 
         result = BlueprintService.install_blueprint(
             hub_config, type_codes, include_recommended=True,
+            defer_restart=True,
         )
 
         # Refresh tool registry so newly installed module tools are available
