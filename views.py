@@ -1370,27 +1370,24 @@ def chat_stream(request):
                         continue
                     if not line.startswith('data: '):
                         continue
-                            raw = line[6:].strip()
-                            if raw == '[DONE]':
-                                continue
-                            try:
-                                evt = json.loads(raw)
-                            except (json.JSONDecodeError, TypeError):
-                                continue
-                            evt_type = evt.get('type', '')
-                            if evt_type == 'text_delta':
-                                accumulated_text.append(evt.get('text', ''))
-                                yield line + '\n\n'
-                            elif evt_type == 'function_call':
-                                function_calls.append(evt)
-                                # Don't forward raw function_call — we'll emit tool_start instead
-                            elif evt_type == 'response':
-                                response_output = evt.get('output', [])
-                            elif evt_type == 'error':
-                                error = evt.get('message', 'Unknown error')
-                                yield line + '\n\n'
-                    else:
-                        yield ': keepalive\n\n'
+                    raw = line[6:].strip()
+                    if raw == '[DONE]':
+                        continue
+                    try:
+                        evt = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    evt_type = evt.get('type', '')
+                    if evt_type == 'text_delta':
+                        accumulated_text.append(evt.get('text', ''))
+                        yield line + '\n\n'
+                    elif evt_type == 'function_call':
+                        function_calls.append(evt)
+                    elif evt_type == 'response':
+                        response_output = evt.get('output', [])
+                    elif evt_type == 'error':
+                        error = evt.get('message', 'Unknown error')
+                        yield line + '\n\n'
 
         except http_requests.exceptions.Timeout:
             error = _("Request took too long. Please try with a shorter message.")
@@ -1522,26 +1519,24 @@ def chat_stream(request):
                             continue
                         if not line.startswith('data: '):
                             continue
-                                raw = line[6:].strip()
-                                if raw == '[DONE]':
-                                    continue
-                                try:
-                                    evt = json.loads(raw)
-                                except (json.JSONDecodeError, TypeError):
-                                    continue
-                                evt_type = evt.get('type', '')
-                                if evt_type == 'text_delta':
-                                    accumulated_text.append(evt.get('text', ''))
-                                    yield line + '\n\n'
-                                elif evt_type == 'function_call':
-                                    function_calls.append(evt)
-                                elif evt_type == 'response':
-                                    response_output = evt.get('output', [])
-                                elif evt_type == 'error':
-                                    stream_error = evt.get('message', '')
-                                    yield line + '\n\n'
-                        else:
-                            yield ': keepalive\n\n'
+                        raw = line[6:].strip()
+                        if raw == '[DONE]':
+                            continue
+                        try:
+                            evt = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        evt_type = evt.get('type', '')
+                        if evt_type == 'text_delta':
+                            accumulated_text.append(evt.get('text', ''))
+                            yield line + '\n\n'
+                        elif evt_type == 'function_call':
+                            function_calls.append(evt)
+                        elif evt_type == 'response':
+                            response_output = evt.get('output', [])
+                        elif evt_type == 'error':
+                            stream_error = evt.get('message', '')
+                            yield line + '\n\n'
 
             except http_requests.exceptions.Timeout:
                 yield f'data: {json.dumps({"type": "error", "message": _("Request took too long. Please try with a shorter message.")})}\n\n'
