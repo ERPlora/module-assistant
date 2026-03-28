@@ -11,6 +11,7 @@ MODULE_VERSION = '1.1.2'
 MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
 MODULE_CATEGORY = 'utilities'
+HAS_MODELS = True
 MODULE_FUNCTIONS = ['utility', 'ai']
 MODULE_COLOR = '#7c3aed'
 
