@@ -392,7 +392,7 @@
                         streamFailed = true;
                         var bubble = document.getElementById('chat-streaming-bubble');
                         if (bubble) bubble.remove();
-                        appendErrorBubble(evt.message || '{% trans "Algo salió mal." %}');
+                        appendErrorBubble(evt.message || '{% trans "Something went wrong." %}');
                     }
                 } catch(e) {}
             }
@@ -488,7 +488,7 @@
         });
     }
 
-    function _submitFallbackWithMessage(form, message, conversationId, sseResponseOutput) {
+    function _submitFallbackWithMessage(form, message, conversationId) {
         setLoading(true);
         _streamRawText = '';
 
@@ -504,13 +504,6 @@
         formData.append('conversation_id', conversationId || (convInput ? convInput.value : ''));
         formData.append('context', contextInput ? contextInput.value : 'general');
         if (csrfInput) formData.append('csrfmiddlewaretoken', csrfInput.value);
-
-        // Pass pre-fetched SSE response to avoid double LLM call
-        if (sseResponseOutput) {
-            try {
-                formData.append('sse_response', JSON.stringify({output: sseResponseOutput}));
-            } catch(e) {}
-        }
 
         fetch(fallbackUrl, {
             method: 'POST',

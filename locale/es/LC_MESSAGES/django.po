@@ -1,0 +1,1012 @@
+# Spanish translations for the AI Assistant module.
+# Copyright (C) 2026 ERPlora
+# This file is distributed under the same license as the ERPlora package.
+# ERPlora <info@erplora.com>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-03-28 13:10+0100\n"
+"PO-Revision-Date: 2026-03-28 13:10+0100\n"
+"Last-Translator: ERPlora <info@erplora.com>\n"
+"Language-Team: Spanish <info@erplora.com>\n"
+"Language: es\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: module.py:4 module.py:22
+msgid "AI Assistant"
+msgstr "Asistente IA"
+
+#: module.py:6
+msgid ""
+"AI-powered business assistant with contextual tools for inventory, sales, "
+"customers, invoicing, and more. Supports voice input and tiered subscription "
+"plans (Basic, Pro, Enterprise) with different AI models and usage limits."
+msgstr ""
+"Asistente de negocio con IA y herramientas contextuales para inventory, "
+"sales, customers, invoicing y más. Soporta entrada de voz y planes de "
+"suscripción por niveles (Basic, Pro, Enterprise) con diferentes modelos de "
+"IA y límites de uso."
+
+#: module.py:28
+msgid "Chat"
+msgstr "Chat"
+
+#: module.py:29
+msgid "History"
+msgstr "Historial"
+
+#: module.py:30
+msgid "Action Log"
+msgstr "Registro de acciones"
+
+#: module.py:31
+msgid "Plan"
+msgstr "Plan"
+
+#: views.py:181
+msgid "Today"
+msgstr "Hoy"
+
+#: views.py:183
+msgid "Yesterday"
+msgstr "Ayer"
+
+#: views.py:554
+msgid ""
+"Modules were installed successfully. The system restarted to load them. Send "
+"a new message to continue where you left off."
+msgstr ""
+"Los módulos se instalaron correctamente. El sistema se reinició para "
+"cargarlos. Envía un nuevo mensaje para continuar donde lo dejaste."
+
+#: views.py:560
+msgid ""
+"Modules were partially installed. The system restarted to load them. Send a "
+"new message to check the status."
+msgstr ""
+"Los módulos se instalaron parcialmente. El sistema se reinició para "
+"cargarlos. Envía un nuevo mensaje para comprobar el estado."
+
+#: views.py:566
+msgid ""
+"The system restarted after completing the action. Your changes were saved. "
+"Send a new message to continue."
+msgstr ""
+"El sistema se reinició tras completar la acción. Tus cambios se guardaron. "
+"Envía un nuevo mensaje para continuar."
+
+#: views.py:573
+msgid ""
+"The system restarted while processing your request. Your changes were likely "
+"saved. Send a new message to continue."
+msgstr ""
+"El sistema se reinició mientras procesaba tu solicitud. Es probable que tus "
+"cambios se hayan guardado. Envía un nuevo mensaje para continuar."
+
+#: views.py:670 views.py:1204 views.py:1213
+msgid "Analyzing your request..."
+msgstr "Analizando tu solicitud..."
+
+#: views.py:783
+#, python-format
+msgid "Using %(tool)s..."
+msgstr "Usando %(tool)s..."
+
+#: views.py:1004
+msgid ""
+"Couldn't generate a response. Please try again or rephrase your request."
+msgstr ""
+"No se pudo generar una respuesta. Inténtalo de nuevo o reformula tu "
+"solicitud."
+
+#: views.py:1106 views.py:1256
+msgid "Please type a message."
+msgstr "Escribe un mensaje."
+
+#: views.py:1198
+msgid "Something went wrong. Please try again or start a new conversation."
+msgstr "Algo salió mal. Inténtalo de nuevo o inicia una nueva conversación."
+
+#: views.py:1399 views.py:1555
+msgid "Request took too long. Please try with a shorter message."
+msgstr "La solicitud tardó demasiado. Prueba con un mensaje más corto."
+
+#: views.py:1402 views.py:1560
+msgid "Connection error. Please try again."
+msgstr "Error de conexión. Inténtalo de nuevo."
+
+#: views.py:1809 views.py:1881 views.py:2448
+msgid "Processing..."
+msgstr "Procesando..."
+
+#: views.py:1905
+msgid "Action not found or already processed."
+msgstr "Acción no encontrada o ya procesada."
+
+#: views.py:1948 views.py:2045
+msgid "Executing plan..."
+msgstr "Ejecutando plan..."
+
+#: views.py:2007 views.py:2008 views.py:2034 views.py:2035 views.py:2133
+#: views.py:2134 views.py:2225 views.py:2226
+msgid "Something went wrong."
+msgstr "Algo salió mal."
+
+#: views.py:2137 views.py:2145
+msgid "Continuing setup..."
+msgstr "Continuando configuración..."
+
+#: views.py:2471
+msgid "Thinking..."
+msgstr "Pensando..."
+
+#: views.py:2642
+#, python-format
+msgid "Set up business: %(name)s"
+msgstr "Configurar negocio: %(name)s"
+
+#: views.py:2642
+msgid "Set up business information"
+msgstr "Configurar información del negocio"
+
+#: views.py:2645
+#, python-format
+msgid "Configure tax at %(rate)s%%"
+msgstr "Configurar impuesto al %(rate)s%%"
+
+#: views.py:2645
+msgid "Configure taxes"
+msgstr "Configurar impuestos"
+
+#: views.py:2647
+msgid "Set region and format"
+msgstr "Establecer región y formato"
+
+#: views.py:2650
+msgid "blueprint"
+msgstr "plantilla"
+
+#: views.py:2651
+#, python-format
+msgid "Install blueprint (%(label)s)"
+msgstr "Instalar plantilla (%(label)s)"
+
+#: views.py:2654
+#, python-format
+msgid "Import products (%(type)s)"
+msgstr "Importar productos (%(type)s)"
+
+#: views.py:2654
+msgid "Import products"
+msgstr "Importar productos"
+
+#: views.py:2656
+msgid "Complete setup"
+msgstr "Completar configuración"
+
+#: views.py:2670
+msgid "role"
+msgstr "rol"
+
+#: views.py:2670
+msgid "employee"
+msgstr "empleado"
+
+#: views.py:2671
+msgid "tax class"
+msgstr "clase de impuesto"
+
+#: views.py:2671
+msgid "category"
+msgstr "categoría"
+
+#: views.py:2672
+msgid "product"
+msgstr "producto"
+
+#: views.py:2672
+msgid "service"
+msgstr "servicio"
+
+#: views.py:2673
+msgid "service category"
+msgstr "categoría de servicio"
+
+#: views.py:2674
+msgid "payment method"
+msgstr "método de pago"
+
+#: views.py:2675
+msgid "zone"
+msgstr "zona"
+
+#: views.py:2675
+msgid "table"
+msgstr "mesa"
+
+#: views.py:2676
+msgid "station"
+msgstr "estación"
+
+#: views.py:2676
+msgid "schedule"
+msgstr "horario"
+
+#: views.py:2677
+msgid "zone batch"
+msgstr "lote de zonas"
+
+#: views.py:2677
+msgid "table batch"
+msgstr "lote de mesas"
+
+#: views.py:2678
+msgid "update store"
+msgstr "actualizar tienda"
+
+#: views.py:2689
+#, python-format
+msgid "%(total)s steps"
+msgstr "%(total)s pasos"
+
+#: views.py:2690
+#, python-format
+msgid "Plan (%(total)s steps): %(summary)s"
+msgstr "Plan (%(total)s pasos): %(summary)s"
+
+#: views.py:2697
+#, python-format
+msgid "Update store configuration: %(fields)s"
+msgstr "Actualizar configuración de tienda: %(fields)s"
+
+#: views.py:2698
+#, python-format
+msgid "Select dashboard blocks: %(blocks)s"
+msgstr "Seleccionar bloques del panel: %(blocks)s"
+
+#: views.py:2699
+#, python-format
+msgid "Enable module: %(module)s"
+msgstr "Activar módulo: %(module)s"
+
+#: views.py:2700
+#, python-format
+msgid "Disable module: %(module)s"
+msgstr "Desactivar módulo: %(module)s"
+
+#: views.py:2701
+#, python-format
+msgid "Create role: %(name)s"
+msgstr "Crear rol: %(name)s"
+
+#: views.py:2702
+#, python-format
+msgid "Create employee: %(name)s (%(role)s)"
+msgstr "Crear empleado: %(name)s (%(role)s)"
+
+#: views.py:2703
+#, python-format
+msgid "Create tax class: %(name)s (%(rate)s%%)"
+msgstr "Crear clase de impuesto: %(name)s (%(rate)s%%)"
+
+#: views.py:2704
+#, python-format
+msgid "Set region and format: %(config)s"
+msgstr "Establecer región y formato: %(config)s"
+
+#: views.py:2705
+#, python-format
+msgid "Set business information: %(name)s"
+msgstr "Configurar información del negocio: %(name)s"
+
+#: views.py:2706
+#, python-format
+msgid "Configure taxes: %(rate)s%% (included: %(included)s)"
+msgstr "Configurar impuestos: %(rate)s%% (incluido: %(included)s)"
+
+#: views.py:2707
+msgid "Complete initial hub setup"
+msgstr "Completar configuración inicial del Hub"
+
+#: views.py:2710
+#, python-format
+msgid "Create product: %(name)s (%(price)s)"
+msgstr "Crear producto: %(name)s (%(price)s)"
+
+#: views.py:2711
+#, python-format
+msgid "Update product: %(id)s"
+msgstr "Actualizar producto: %(id)s"
+
+#: views.py:2712
+#, python-format
+msgid "Create category: %(name)s"
+msgstr "Crear categoría: %(name)s"
+
+#: views.py:2713
+#, python-format
+msgid "Adjust stock: %(qty)s units of product %(id)s"
+msgstr "Ajustar stock: %(qty)s unidades del producto %(id)s"
+
+#: views.py:2714
+#, python-format
+msgid "Bulk stock adjustment (%(count)s products): %(reason)s"
+msgstr "Ajuste masivo de stock (%(count)s productos): %(reason)s"
+
+#: views.py:2716
+#, python-format
+msgid "Create customer: %(name)s"
+msgstr "Crear cliente: %(name)s"
+
+#: views.py:2717
+#, python-format
+msgid "Update customer: %(id)s"
+msgstr "Actualizar cliente: %(id)s"
+
+#: views.py:2719
+#, python-format
+msgid "Create service: %(name)s (%(price)s)"
+msgstr "Crear servicio: %(name)s (%(price)s)"
+
+#: views.py:2720
+#, python-format
+msgid "Create service category: %(name)s"
+msgstr "Crear categoría de servicio: %(name)s"
+
+#: views.py:2721
+#, python-format
+msgid "Update service: %(id)s"
+msgstr "Actualizar servicio: %(id)s"
+
+#: views.py:2723
+#, python-format
+msgid "Create quote: %(title)s"
+msgstr "Crear presupuesto: %(title)s"
+
+#: views.py:2724
+#, python-format
+msgid "Update quote %(id)s status to %(action)s"
+msgstr "Actualizar estado del presupuesto %(id)s a %(action)s"
+
+#: views.py:2726
+#, python-format
+msgid "Create lead: %(name)s (%(company)s)"
+msgstr "Crear lead: %(name)s (%(company)s)"
+
+#: views.py:2727
+#, python-format
+msgid "Move lead %(id)s to stage %(stage)s"
+msgstr "Mover lead %(id)s a la etapa %(stage)s"
+
+#: views.py:2729
+#, python-format
+msgid "Create purchase order for supplier %(id)s"
+msgstr "Crear orden de compra para proveedor %(id)s"
+
+#: views.py:2731
+#, python-format
+msgid "Book appointment: %(customer)s on %(datetime)s"
+msgstr "Reservar cita: %(customer)s el %(datetime)s"
+
+#: views.py:2733
+#, python-format
+msgid "Record expense: %(title)s (%(amount)s)"
+msgstr "Registrar gasto: %(title)s (%(amount)s)"
+
+#: views.py:2735
+#, python-format
+msgid "Create project: %(name)s"
+msgstr "Crear proyecto: %(name)s"
+
+#: views.py:2736
+#, python-format
+msgid "Log %(hours)sh on project %(id)s"
+msgstr "Registrar %(hours)sh en proyecto %(id)s"
+
+#: views.py:2738
+#, python-format
+msgid "Create support ticket: %(subject)s"
+msgstr "Crear ticket de soporte: %(subject)s"
+
+#: views.py:2740
+#, python-format
+msgid "Create coupon: %(code)s (%(value)s%(type)s)"
+msgstr "Crear cupón: %(code)s (%(value)s%(type)s)"
+
+#: views.py:2742
+#, python-format
+msgid "Award %(points)s loyalty points to member %(id)s"
+msgstr "Otorgar %(points)s puntos de fidelidad al miembro %(id)s"
+
+#: views.py:2744
+#, python-format
+msgid "Create shipment for %(name)s"
+msgstr "Crear envío para %(name)s"
+
+#: views.py:2746
+#, python-format
+msgid "Create gift card with balance %(balance)s"
+msgstr "Crear tarjeta regalo con saldo %(balance)s"
+
+#: views.py:2748
+msgid "Update analytics settings"
+msgstr "Actualizar configuración de analíticas"
+
+#: views.py:2750
+#, python-format
+msgid "Create price list: %(name)s"
+msgstr "Crear lista de precios: %(name)s"
+
+#: views.py:2751
+#, python-format
+msgid "Add pricing rule to list %(id)s"
+msgstr "Añadir regla de precios a la lista %(id)s"
+
+#: views.py:2753
+#, python-format
+msgid "%(action)s accounting sync: %(id)s"
+msgstr "%(action)s sincronización contable: %(id)s"
+
+#: views.py:2753 views.py:2819
+msgid "Enable"
+msgstr "Activar"
+
+#: views.py:2753 views.py:2819
+msgid "Disable"
+msgstr "Desactivar"
+
+#: views.py:2754
+#, python-format
+msgid "Run accounting sync: %(id)s"
+msgstr "Ejecutar sincronización contable: %(id)s"
+
+#: views.py:2756
+#, python-format
+msgid "Create reservation: %(name)s"
+msgstr "Crear reserva: %(name)s"
+
+#: views.py:2757
+#, python-format
+msgid "Update reservation %(id)s status to %(status)s"
+msgstr "Actualizar estado de reserva %(id)s a %(status)s"
+
+#: views.py:2758
+#, python-format
+msgid "Create time slot: %(day)s %(start)s-%(end)s"
+msgstr "Crear franja horaria: %(day)s %(start)s-%(end)s"
+
+#: views.py:2759
+#, python-format
+msgid "Block date: %(date)s"
+msgstr "Bloquear fecha: %(date)s"
+
+#: views.py:2760
+msgid "Update reservation settings"
+msgstr "Actualizar configuración de reservas"
+
+#: views.py:2761
+#, python-format
+msgid "Create zone: %(name)s"
+msgstr "Crear zona: %(name)s"
+
+#: views.py:2763
+#, python-format
+msgid "Create table: %(name)s"
+msgstr "Crear mesa: %(name)s"
+
+#: views.py:2764
+#, python-format
+msgid "Update table: %(id)s"
+msgstr "Actualizar mesa: %(id)s"
+
+#: views.py:2765
+#, python-format
+msgid "Create %(count)s tables"
+msgstr "Crear %(count)s mesas"
+
+#: views.py:2766
+#, python-format
+msgid "Open table session: %(id)s"
+msgstr "Abrir sesión de mesa: %(id)s"
+
+#: views.py:2768
+#, python-format
+msgid "Record attendance for employee %(id)s"
+msgstr "Registrar asistencia del empleado %(id)s"
+
+#: views.py:2770
+#, python-format
+msgid "Create work order: %(title)s"
+msgstr "Crear orden de trabajo: %(title)s"
+
+#: views.py:2771
+#, python-format
+msgid "Create maintenance order: %(title)s"
+msgstr "Crear orden de mantenimiento: %(title)s"
+
+#: views.py:2773
+#, python-format
+msgid "Create payment link: %(amount)s"
+msgstr "Crear enlace de pago: %(amount)s"
+
+#: views.py:2774
+#, python-format
+msgid "Create payment method: %(name)s"
+msgstr "Crear método de pago: %(name)s"
+
+#: views.py:2776
+#, python-format
+msgid "Create accounting entry: %(code)s %(name)s"
+msgstr "Crear asiento contable: %(code)s %(name)s"
+
+#: views.py:2777
+#, python-format
+msgid "Create journal entry: %(desc)s"
+msgstr "Crear apunte de diario: %(desc)s"
+
+#: views.py:2779
+#, python-format
+msgid "Create feedback form: %(title)s"
+msgstr "Crear formulario de feedback: %(title)s"
+
+#: views.py:2781
+#, python-format
+msgid "Create bill of materials: %(name)s"
+msgstr "Crear lista de materiales: %(name)s"
+
+#: views.py:2782
+#, python-format
+msgid "Create production order: %(id)s"
+msgstr "Crear orden de producción: %(id)s"
+
+#: views.py:2784
+#, python-format
+msgid "Create report: %(name)s"
+msgstr "Crear informe: %(name)s"
+
+#: views.py:2786
+#, python-format
+msgid "Create message template: %(name)s"
+msgstr "Crear plantilla de mensaje: %(name)s"
+
+#: views.py:2787
+#, python-format
+msgid "Create automation: %(name)s"
+msgstr "Crear automatización: %(name)s"
+
+#: views.py:2789
+#, python-format
+msgid "Approve request: %(id)s"
+msgstr "Aprobar solicitud: %(id)s"
+
+#: views.py:2790
+#, python-format
+msgid "Reject request: %(id)s"
+msgstr "Rechazar solicitud: %(id)s"
+
+#: views.py:2792
+#, python-format
+msgid "Create training program: %(name)s"
+msgstr "Crear programa de formación: %(name)s"
+
+#: views.py:2793
+#, python-format
+msgid "Enroll employee %(emp)s in training %(prog)s"
+msgstr "Inscribir empleado %(emp)s en formación %(prog)s"
+
+#: views.py:2795
+#, python-format
+msgid "Create return reason: %(name)s"
+msgstr "Crear motivo de devolución: %(name)s"
+
+#: views.py:2797
+#, python-format
+msgid "Create asset: %(name)s"
+msgstr "Crear activo: %(name)s"
+
+#: views.py:2798
+#, python-format
+msgid "Schedule asset maintenance: %(id)s"
+msgstr "Programar mantenimiento de activo: %(id)s"
+
+#: views.py:2800
+#, python-format
+msgid "Create warehouse: %(name)s"
+msgstr "Crear almacén: %(name)s"
+
+#: views.py:2801
+#, python-format
+msgid "Create warehouse zone: %(name)s"
+msgstr "Crear zona de almacén: %(name)s"
+
+#: views.py:2803
+#, python-format
+msgid "Create electronic invoice: %(id)s"
+msgstr "Crear factura electrónica: %(id)s"
+
+#: views.py:2804
+#, python-format
+msgid "Update Facturae %(id)s status to %(action)s"
+msgstr "Actualizar estado de Facturae %(id)s a %(action)s"
+
+#: views.py:2806
+#, python-format
+msgid "Create payslip: employee %(id)s (%(period)s)"
+msgstr "Crear nómina: empleado %(id)s (%(period)s)"
+
+#: views.py:2807
+#, python-format
+msgid "Update payslip %(id)s status to %(action)s"
+msgstr "Actualizar estado de nómina %(id)s a %(action)s"
+
+#: views.py:2809
+#, python-format
+msgid "Create marketing campaign: %(name)s"
+msgstr "Crear campaña de marketing: %(name)s"
+
+#: views.py:2811
+#, python-format
+msgid "Create commission rule: %(name)s"
+msgstr "Crear regla de comisión: %(name)s"
+
+#: views.py:2813
+#, python-format
+msgid "Request signature: %(doc)s"
+msgstr "Solicitar firma: %(doc)s"
+
+#: views.py:2815
+#, python-format
+msgid "Create budget: %(name)s"
+msgstr "Crear presupuesto: %(name)s"
+
+#: views.py:2817
+#, python-format
+msgid "Create webhook: %(url)s"
+msgstr "Crear webhook: %(url)s"
+
+#: views.py:2819
+#, python-format
+msgid "%(action)s marketplace sync: %(id)s"
+msgstr "%(action)s sincronización de marketplace: %(id)s"
+
+#: views.py:2821
+#, python-format
+msgid "Create patient: %(name)s"
+msgstr "Crear paciente: %(name)s"
+
+#: views.py:2822
+#, python-format
+msgid "Create treatment: %(name)s"
+msgstr "Crear tratamiento: %(name)s"
+
+#: views.py:2824
+#, python-format
+msgid "Create survey: %(title)s"
+msgstr "Crear encuesta: %(title)s"
+
+#: views.py:2826
+#, python-format
+msgid "Assign chat %(id)s to agent %(agent)s"
+msgstr "Asignar chat %(id)s al agente %(agent)s"
+
+#: views.py:2827
+#, python-format
+msgid "Close chat conversation: %(id)s"
+msgstr "Cerrar conversación de chat: %(id)s"
+
+#: views.py:2828
+#, python-format
+msgid "Send message in conversation %(id)s"
+msgstr "Enviar mensaje en conversación %(id)s"
+
+#: views.py:2830
+#, python-format
+msgid "Create job position: %(title)s"
+msgstr "Crear puesto de trabajo: %(title)s"
+
+#: views.py:2831
+#, python-format
+msgid "Create candidate: %(name)s"
+msgstr "Crear candidato: %(name)s"
+
+#: views.py:2833
+#, python-format
+msgid "Add currency: %(code)s"
+msgstr "Añadir divisa: %(code)s"
+
+#: views.py:2834
+#, python-format
+msgid "Update exchange rate: %(id)s to %(rate)s"
+msgstr "Actualizar tipo de cambio: %(id)s a %(rate)s"
+
+#: views.py:2836
+#, python-format
+msgid "Create property: %(name)s"
+msgstr "Crear propiedad: %(name)s"
+
+#: views.py:2837
+#, python-format
+msgid "Create tenant: %(name)s"
+msgstr "Crear inquilino: %(name)s"
+
+#: views.py:2838
+#, python-format
+msgid "Create lease for property %(id)s"
+msgstr "Crear contrato de alquiler para propiedad %(id)s"
+
+#: views.py:2840
+#, python-format
+msgid "Create task: %(title)s"
+msgstr "Crear tarea: %(title)s"
+
+#: views.py:2841
+#, python-format
+msgid "Update task %(id)s status to %(status)s"
+msgstr "Actualizar estado de tarea %(id)s a %(status)s"
+
+#: views.py:2843
+#, python-format
+msgid "Create SII submission: %(type)s (%(period)s)"
+msgstr "Crear envío SII: %(type)s (%(period)s)"
+
+#: views.py:2845
+#, python-format
+msgid "Set business hours: %(day)s"
+msgstr "Establecer horario comercial: %(day)s"
+
+#: views.py:2846
+#, python-format
+msgid "Create special day: %(date)s"
+msgstr "Crear día especial: %(date)s"
+
+#: views.py:2847
+#, python-format
+msgid "Set business hours (%(count)s days)"
+msgstr "Establecer horario comercial (%(count)s días)"
+
+#: views.py:2849
+msgid "Mark notifications as read"
+msgstr "Marcar notificaciones como leídas"
+
+#: views.py:2851
+#, python-format
+msgid "Create leave request: %(type)s (%(start)s - %(end)s)"
+msgstr "Crear solicitud de ausencia: %(type)s (%(start)s - %(end)s)"
+
+#: views.py:2852
+#, python-format
+msgid "Approve leave request: %(id)s"
+msgstr "Aprobar solicitud de ausencia: %(id)s"
+
+#: views.py:2853
+#, python-format
+msgid "Reject leave request: %(id)s"
+msgstr "Rechazar solicitud de ausencia: %(id)s"
+
+#: views.py:2855
+#, python-format
+msgid "Create data export: %(type)s (%(format)s)"
+msgstr "Crear exportación de datos: %(type)s (%(format)s)"
+
+#: views.py:2857
+#, python-format
+msgid "Create segment: %(name)s"
+msgstr "Crear segmento: %(name)s"
+
+#: views.py:2859
+#, python-format
+msgid "Create GDPR data request: %(type)s"
+msgstr "Crear solicitud de datos GDPR: %(type)s"
+
+#: views.py:2861
+#, python-format
+msgid "Create staff member: %(name)s"
+msgstr "Crear miembro del equipo: %(name)s"
+
+#: views.py:2862
+#, python-format
+msgid "Create staff role: %(name)s"
+msgstr "Crear rol de equipo: %(name)s"
+
+#: views.py:2863
+#, python-format
+msgid "Create time-off request for staff %(id)s"
+msgstr "Crear solicitud de descanso para personal %(id)s"
+
+#: views.py:2864
+#, python-format
+msgid "Assign service %(service)s to staff %(staff)s"
+msgstr "Asignar servicio %(service)s al personal %(staff)s"
+
+#: views.py:2866
+#, python-format
+msgid "Create student: %(name)s"
+msgstr "Crear alumno: %(name)s"
+
+#: views.py:2867
+#, python-format
+msgid "Create enrollment for student %(id)s"
+msgstr "Crear matrícula para alumno %(id)s"
+
+#: views.py:2868
+#, python-format
+msgid "Create course: %(name)s"
+msgstr "Crear curso: %(name)s"
+
+#: views.py:2870
+#, python-format
+msgid "Create vehicle: %(name)s"
+msgstr "Crear vehículo: %(name)s"
+
+#: views.py:2871
+#, python-format
+msgid "Record fuel log for vehicle %(id)s"
+msgstr "Registrar repostaje del vehículo %(id)s"
+
+#: views.py:2873
+#, python-format
+msgid "Create referral: %(name)s"
+msgstr "Crear referido: %(name)s"
+
+#: views.py:2875
+#, python-format
+msgid "Create tax rate: %(name)s (%(rate)s%%)"
+msgstr "Crear tipo impositivo: %(name)s (%(rate)s%%)"
+
+#: views.py:2877
+#, python-format
+msgid "Create document template: %(name)s"
+msgstr "Crear plantilla de documento: %(name)s"
+
+#: views.py:2879
+#, python-format
+msgid "Create contract: %(title)s"
+msgstr "Crear contrato: %(title)s"
+
+#: views.py:2880
+#, python-format
+msgid "Update contract %(id)s status to %(status)s"
+msgstr "Actualizar estado del contrato %(id)s a %(status)s"
+
+#: views.py:2882
+#, python-format
+msgid "Create cash register: %(name)s"
+msgstr "Crear caja registradora: %(name)s"
+
+#: views.py:2883
+#, python-format
+msgid "Close cash session: %(id)s (balance: %(balance)s)"
+msgstr "Cerrar sesión de caja: %(id)s (saldo: %(balance)s)"
+
+#: views.py:2885
+#, python-format
+msgid "Create order: %(ref)s"
+msgstr "Crear pedido: %(ref)s"
+
+#: views.py:2886
+#, python-format
+msgid "Update order %(id)s status to %(status)s"
+msgstr "Actualizar estado del pedido %(id)s a %(status)s"
+
+#: views.py:2887
+#, python-format
+msgid "Create kitchen station: %(name)s"
+msgstr "Crear estación de cocina: %(name)s"
+
+#: views.py:2888
+#, python-format
+msgid "Configure station routing: %(id)s"
+msgstr "Configurar enrutamiento de estación: %(id)s"
+
+#: views.py:2889
+msgid "Update orders settings"
+msgstr "Actualizar configuración de pedidos"
+
+#: views.py:2890
+#, python-format
+msgid "Mark item as ready: %(id)s"
+msgstr "Marcar artículo como listo: %(id)s"
+
+#: views.py:2891
+#, python-format
+msgid "Mark order as ready: %(id)s"
+msgstr "Marcar pedido como listo: %(id)s"
+
+#: views.py:2892
+#, python-format
+msgid "Recall order: %(id)s"
+msgstr "Recuperar pedido: %(id)s"
+
+#: views.py:2893
+msgid "Update kitchen settings"
+msgstr "Actualizar configuración de cocina"
+
+#: views.py:2895
+#, python-format
+msgid "Create email template: %(name)s"
+msgstr "Crear plantilla de email: %(name)s"
+
+#: views.py:2897
+#, python-format
+msgid "Create knowledge base category: %(name)s"
+msgstr "Crear categoría de base de conocimiento: %(name)s"
+
+#: views.py:2898
+#, python-format
+msgid "Create help article: %(title)s"
+msgstr "Crear artículo de ayuda: %(title)s"
+
+#: views.py:2900
+#, python-format
+msgid "Create quality inspection: %(name)s"
+msgstr "Crear inspección de calidad: %(name)s"
+
+#: views.py:2902
+#, python-format
+msgid "Update online order %(id)s status to %(status)s"
+msgstr "Actualizar estado del pedido online %(id)s a %(status)s"
+
+#: views.py:2904
+#, python-format
+msgid "Create subscription for customer %(id)s"
+msgstr "Crear suscripción para cliente %(id)s"
+
+#: views.py:2905
+#, python-format
+msgid "Update subscription %(id)s status to %(status)s"
+msgstr "Actualizar estado de suscripción %(id)s a %(status)s"
+
+#: views.py:2907
+#, python-format
+msgid "Create invoice for customer %(id)s"
+msgstr "Crear factura para cliente %(id)s"
+
+#: views.py:2908
+#, python-format
+msgid "Update invoice %(id)s status to %(action)s"
+msgstr "Actualizar estado de factura %(id)s a %(action)s"
+
+#: views.py:2910
+#, python-format
+msgid "Create rental item: %(name)s"
+msgstr "Crear artículo de alquiler: %(name)s"
+
+#: views.py:2911
+#, python-format
+msgid "Create rental for customer %(id)s"
+msgstr "Crear alquiler para cliente %(id)s"
+
+#: views.py:2913
+#, python-format
+msgid "Create folder: %(name)s"
+msgstr "Crear carpeta: %(name)s"
+
+#: views.py:2915
+#, python-format
+msgid "Update online booking %(id)s status to %(action)s"
+msgstr "Actualizar estado de reserva online %(id)s a %(action)s"
+
+#: views.py:2916
+#, python-format
+msgid "Create online booking: %(name)s on %(date)s"
+msgstr "Crear reserva online: %(name)s el %(date)s"
+
+#: views.py:2918
+#, python-format
+msgid "Add notes to call %(id)s"
+msgstr "Añadir notas a la llamada %(id)s"
+
+#: views.py:2920
+#, python-format
+msgid "Create bank account: %(name)s"
+msgstr "Crear cuenta bancaria: %(name)s"
+
+#: views.py:2922
+#, python-format
+msgid "Create %(count)s employees: %(names)s"
+msgstr "Crear %(count)s empleados: %(names)s"

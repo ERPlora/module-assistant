@@ -551,27 +551,27 @@ def _get_post_restart_message(user_id):
             installed = result.get('modules_installed', 0) or result.get('succeeded', 0)
             if last_action.success and installed > 0:
                 return _(
-                    "Se instalaron los módulos correctamente. "
-                    "El sistema se reinició para cargarlos. "
-                    "Envía un nuevo mensaje para continuar donde lo dejaste."
+                    "Modules were installed successfully. "
+                    "The system restarted to load them. "
+                    "Send a new message to continue where you left off."
                 )
             elif result.get('errors'):
                 return _(
-                    "Los módulos se instalaron parcialmente. El sistema se reinició para cargarlos. "
-                    "Envía un nuevo mensaje para verificar el estado."
+                    "Modules were partially installed. The system restarted to load them. "
+                    "Send a new message to check the status."
                 )
 
         if last_action and last_action.success:
             return _(
-                "El sistema se reinició tras completar la acción. "
-                "Tus cambios se guardaron. Envía un nuevo mensaje para continuar."
+                "The system restarted after completing the action. "
+                "Your changes were saved. Send a new message to continue."
             )
     except Exception:
         pass
 
     return _(
-        "El sistema se reinició mientras procesaba tu solicitud. "
-        "Tus cambios probablemente se guardaron. Envía un nuevo mensaje para continuar."
+        "The system restarted while processing your request. "
+        "Your changes were likely saved. Send a new message to continue."
     )
 
 
@@ -667,19 +667,14 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
     tier_info = None
     call_counts = {}  # {call_hash: count} for anti-loop detection
 
-    _set_progress(request_id, 'thinking', _('Analizando tu solicitud...'),
+    _set_progress(request_id, 'thinking', _('Analyzing your request...'),
                   db_request_id=db_request_id)
 
     use_async = _is_async_available()
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
-            # Use pre-fetched SSE response on first iteration to avoid double LLM call
-            if prefetched_response is not None and iteration == 0:
-                response_data = prefetched_response
-                loop_tier_info = None
-                prefetched_response = None  # consume it
-            elif use_async:
+            if use_async:
                 response_data, loop_tier_info = _call_cloud_async_with_poll(
                     request=request,
                     input_data=ai_input,
@@ -785,7 +780,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
             # every call_id always gets a result (prevents BUG-002:
             # "No tool output found for function call" corruption).
             try:
-                _set_progress(request_id, 'tool', _('Usando %(tool)s...') % {'tool': tool_name},
+                _set_progress(request_id, 'tool', _('Using %(tool)s...') % {'tool': tool_name},
                               db_request_id=db_request_id)
                 tool = get_tool(tool_name)
                 if not tool:
@@ -1006,7 +1001,7 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
 
     # Fallback: if AI returned no text and no pending actions, show a message
     if not response_text and not pending_actions:
-        response_text = _("No se pudo generar una respuesta. Inténtalo de nuevo o reformula tu mensaje.")
+        response_text = _("Couldn't generate a response. Please try again or rephrase your request.")
 
     return {
         'response_text': response_text,
@@ -1108,7 +1103,7 @@ def chat(request):
         return HttpResponse(
             render_to_string('assistant/partials/message.html', {
                 'role': 'assistant',
-                'content': _('Escribe un mensaje.'),
+                'content': _('Please type a message.'),
             }, request=request),
         )
 
@@ -1200,13 +1195,13 @@ def chat(request):
             _set_progress(request_id, 'error', str(e), db_request_id=db_request.id)
         except Exception as e:
             logger.error(f"[ASSISTANT] Background error: {e}", exc_info=True)
-            friendly_msg = _("Algo salió mal. Inténtalo de nuevo o abre una nueva conversación.")
+            friendly_msg = _("Something went wrong. Please try again or start a new conversation.")
             cache.set(f'assistant_result_{request_id}', {'error': friendly_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
             _set_progress(request_id, 'error', friendly_msg, db_request_id=db_request.id)
 
     # Set initial progress before starting thread to avoid race condition
     # where first poll fires before the thread sets any progress entry
-    _set_progress(request_id, 'thinking', _('Analizando tu solicitud...'), db_request_id=db_request.id)
+    _set_progress(request_id, 'thinking', _('Analyzing your request...'), db_request_id=db_request.id)
 
     # Start background thread
     thread = threading.Thread(target=_background_task, daemon=True)
@@ -1215,7 +1210,7 @@ def chat(request):
     # Return polling partial
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': _('Analizando tu solicitud...'),
+        'message': _('Analyzing your request...'),
     }, request=request)
 
     response = HttpResponse(html)
@@ -1258,7 +1253,7 @@ def chat_stream(request):
 
     if not message:
         def _err():
-            yield f'data: {json.dumps({"type": "error", "message": _("Escribe un mensaje.")})}\n\n'
+            yield f'data: {json.dumps({"type": "error", "message": _("Please type a message.")})}\n\n'
             yield 'data: [DONE]\n\n'
         return StreamingHttpResponse(_err(), content_type='text/event-stream')
 
@@ -1401,10 +1396,10 @@ def chat_stream(request):
                         yield ': keepalive\n\n'
 
         except http_requests.exceptions.Timeout:
-            error = _("La solicitud tardó demasiado. Inténtalo con un mensaje más corto.")
+            error = _("Request took too long. Please try with a shorter message.")
         except Exception as e:
             logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
-            error = _("Error de conexión. Inténtalo de nuevo.")
+            error = _("Connection error. Please try again.")
 
         return response_output, accumulated_text, function_calls, tier_info_data, error
 
@@ -1557,12 +1552,12 @@ def chat_stream(request):
                             yield ': keepalive\n\n'
 
             except http_requests.exceptions.Timeout:
-                yield f'data: {json.dumps({"type": "error", "message": _("La solicitud tardó demasiado. Inténtalo con un mensaje más corto.")})}\n\n'
+                yield f'data: {json.dumps({"type": "error", "message": _("Request took too long. Please try with a shorter message.")})}\n\n'
                 yield 'data: [DONE]\n\n'
                 return
             except Exception as e:
                 logger.error(f"[ASSISTANT STREAM] Proxy error: {e}", exc_info=True)
-                yield f'data: {json.dumps({"type": "error", "message": _("Error de conexión. Inténtalo de nuevo.")})}\n\n'
+                yield f'data: {json.dumps({"type": "error", "message": _("Connection error. Please try again.")})}\n\n'
                 yield 'data: [DONE]\n\n'
                 return
 
@@ -1811,7 +1806,7 @@ def poll_progress(request, request_id):
                     # Still in progress — show last known progress
                     return HttpResponse(render_to_string('assistant/partials/progress.html', {
                         'request_id': request_id,
-                        'message': db_req.progress_message or _('Procesando...'),
+                        'message': db_req.progress_message or _('Processing...'),
                     }, request=request))
 
             if not progress:
@@ -1883,7 +1878,7 @@ def poll_progress(request, request_id):
         # Still processing — return progress partial that continues polling
         return HttpResponse(render_to_string('assistant/partials/progress.html', {
             'request_id': request_id,
-            'message': progress.get('data', _('Procesando...')),
+            'message': progress.get('data', _('Processing...')),
         }, request=request))
 
 
@@ -1907,7 +1902,7 @@ def confirm_action(request, log_id):
     except AssistantActionLog.DoesNotExist:
         return HttpResponse(render_to_string('assistant/partials/message.html', {
             'role': 'system',
-            'content': _('Acción no encontrada o ya procesada.'),
+            'content': _('Action not found or already processed.'),
         }, request=request))
 
     # execute_plan runs asynchronously so per-step progress is streamed
@@ -1950,7 +1945,7 @@ def _confirm_execute_plan_async(request, action_log, user_id):
             'error': True,
         }, request=request))
 
-    _set_progress(request_id, 'tool', _('Ejecutando plan...'))
+    _set_progress(request_id, 'tool', _('Executing plan...'))
 
     def _run_plan():
         from django.test import RequestFactory
@@ -2009,8 +2004,8 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                         schedule_server_restart(delay=5)
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Plan resume loop error: {e}", exc_info=True)
-                    cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', _('Algo salió mal.'))
+                    cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', _('Something went wrong.'))
                     if needs_restart:
                         from apps.core.utils import schedule_server_restart
                         schedule_server_restart(delay=5)
@@ -2036,8 +2031,8 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     schedule_server_restart(delay=5)
         except Exception as e:
             logger.error(f"[ASSISTANT] execute_plan async error: {e}", exc_info=True)
-            cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', _('Algo salió mal.'))
+            cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', _('Something went wrong.'))
             if needs_restart:
                 from apps.core.utils import schedule_server_restart
                 schedule_server_restart(delay=5)
@@ -2047,7 +2042,7 @@ def _confirm_execute_plan_async(request, action_log, user_id):
 
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': _('Ejecutando plan...'),
+        'message': _('Executing plan...'),
     }, request=request)
     return HttpResponse(html)
 
@@ -2135,11 +2130,11 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
             _set_progress(request_id, 'error', str(e))
         except Exception as e:
             logger.error(f"[ASSISTANT] Resume loop error: {e}", exc_info=True)
-            cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', _('Algo salió mal.'))
+            cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+            _set_progress(request_id, 'error', _('Something went wrong.'))
 
     # Set initial progress before thread to avoid poll race condition
-    _set_progress(request_id, 'thinking', _('Continuando configuración...'))
+    _set_progress(request_id, 'thinking', _('Continuing setup...'))
 
     thread = threading.Thread(target=_resume_loop, daemon=True)
     thread.start()
@@ -2147,7 +2142,7 @@ def _resume_loop_after_confirm(request, action_log, result, user_id):
     # Return a polling partial so the frontend waits for the resumed loop
     html = render_to_string('assistant/partials/progress.html', {
         'request_id': request_id,
-        'message': _('Continuando configuración...'),
+        'message': _('Continuing setup...'),
     }, request=request)
     return HttpResponse(html)
 
@@ -2227,8 +2222,8 @@ def cancel_action(request, log_id):
                     _set_progress(request_id, 'error', str(e))
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Cancel resume loop error: {e}", exc_info=True)
-                    cache.set(f'assistant_result_{request_id}', {'error': _('Algo salió mal.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', _('Algo salió mal.'))
+                    cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
+                    _set_progress(request_id, 'error', _('Something went wrong.'))
 
             thread = threading.Thread(target=_resume_loop, daemon=True)
             thread.start()
@@ -2450,7 +2445,7 @@ def _call_cloud_async_with_poll(request, input_data, instructions, tools,
         except Exception:
             pass
 
-    _set_progress(request_id, 'thinking', _('Procesando...'),
+    _set_progress(request_id, 'thinking', _('Processing...'),
                   db_request_id=db_request_id)
 
     elapsed = 0
@@ -2473,7 +2468,7 @@ def _call_cloud_async_with_poll(request, input_data, instructions, tools,
             raise AgenticLoopError(error_msg)
 
         if status == 'processing':
-            _set_progress(request_id, 'thinking', _('Pensando...'),
+            _set_progress(request_id, 'thinking', _('Thinking...'),
                           db_request_id=db_request_id)
 
     raise AgenticLoopError("AI request timed out. Please try again.")
@@ -2644,21 +2639,21 @@ def _summarize_plan_steps(steps):
 
         if action == 'set_business_info':
             name = params.get('business_name', '')
-            seen_named.append(_("Configurar negocio: %(name)s") % {'name': name} if name else _("Configurar datos del negocio"))
+            seen_named.append(_("Set up business: %(name)s") % {'name': name} if name else _("Set up business information"))
         elif action == 'set_tax_config':
             rate = params.get('tax_rate', '')
-            seen_named.append(_("Configurar impuesto al %(rate)s%%") % {'rate': rate} if rate else _("Configurar impuestos"))
+            seen_named.append(_("Configure tax at %(rate)s%%") % {'rate': rate} if rate else _("Configure taxes"))
         elif action == 'set_regional_config':
-            seen_named.append(_("Configurar región y formato"))
+            seen_named.append(_("Set region and format"))
         elif action == 'install_blueprint':
             type_codes = params.get('type_codes', [])
-            label = ', '.join(type_codes) if type_codes else _("plantilla")
-            seen_named.append(_("Instalar plantilla (%(label)s)") % {'label': label})
+            label = ', '.join(type_codes) if type_codes else _("blueprint")
+            seen_named.append(_("Install blueprint (%(label)s)") % {'label': label})
         elif action == 'install_blueprint_products':
             bt = params.get('business_type', '')
-            seen_named.append(_("Importar productos (%(type)s)") % {'type': bt} if bt else _("Importar productos"))
+            seen_named.append(_("Import products (%(type)s)") % {'type': bt} if bt else _("Import products"))
         elif action == 'complete_setup':
-            seen_named.append(_("Completar configuración"))
+            seen_named.append(_("Complete setup"))
         elif action in ('create_role', 'create_employee', 'create_tax_class',
                         'create_category', 'create_product', 'create_service',
                         'create_service_category', 'create_payment_method',
@@ -2672,15 +2667,15 @@ def _summarize_plan_steps(steps):
 
     # Build count labels
     label_map = {
-        'create_role': _('rol'), 'create_employee': _('empleado'),
-        'create_tax_class': _('clase de impuesto'), 'create_category': _('categoría'),
-        'create_product': _('producto'), 'create_service': _('servicio'),
-        'create_service_category': _('categoría de servicio'),
-        'create_payment_method': _('método de pago'),
-        'create_zone': _('zona'), 'create_table': _('mesa'),
-        'create_station': _('estación'), 'set_business_hours': _('horario'),
-        'bulk_create_zones': _('lote de zonas'), 'bulk_create_tables': _('lote de mesas'),
-        'update_store_config': _('actualizar tienda'),
+        'create_role': _('role'), 'create_employee': _('employee'),
+        'create_tax_class': _('tax class'), 'create_category': _('category'),
+        'create_product': _('product'), 'create_service': _('service'),
+        'create_service_category': _('service category'),
+        'create_payment_method': _('payment method'),
+        'create_zone': _('zone'), 'create_table': _('table'),
+        'create_station': _('station'), 'set_business_hours': _('schedule'),
+        'bulk_create_zones': _('zone batch'), 'bulk_create_tables': _('table batch'),
+        'update_store_config': _('update store'),
     }
     for action, count in counts.items():
         label = label_map.get(action, action.replace('_', ' '))
@@ -2691,240 +2686,240 @@ def _summarize_plan_steps(steps):
 
     all_parts = seen_named + parts
     total = len(steps)
-    summary = ', '.join(all_parts) if all_parts else _("%(total)s pasos") % {'total': total}
-    return _("Plan (%(total)s pasos): %(summary)s") % {'total': total, 'summary': summary}
+    summary = ', '.join(all_parts) if all_parts else _("%(total)s steps") % {'total': total}
+    return _("Plan (%(total)s steps): %(summary)s") % {'total': total, 'summary': summary}
 
 
 def format_confirmation_text(tool_name, tool_args):
     """Format a human-readable description of the pending action."""
     descriptions = {
         # Hub core tools
-        'update_store_config': lambda a: _("Actualizar configuración de la tienda: %(fields)s") % {'fields': ', '.join(k for k, v in a.items() if v is not None)},
-        'select_blocks': lambda a: _("Seleccionar bloques del dashboard: %(blocks)s") % {'blocks': ', '.join(a.get('block_slugs', []))},
-        'enable_module': lambda a: _("Activar módulo: %(module)s") % {'module': a.get('module_id', '')},
-        'disable_module': lambda a: _("Desactivar módulo: %(module)s") % {'module': a.get('module_id', '')},
-        'create_role': lambda a: _("Crear rol: %(name)s") % {'name': a.get('display_name', a.get('name', ''))},
-        'create_employee': lambda a: _("Crear empleado: %(name)s (%(role)s)") % {'name': a.get('name', ''), 'role': a.get('role_name', '')},
-        'create_tax_class': lambda a: _("Crear impuesto: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
-        'set_regional_config': lambda a: _("Configurar región y formato: %(config)s") % {'config': ', '.join(f'{k}={v}' for k, v in a.items() if v is not None)},
-        'set_business_info': lambda a: _("Configurar datos del negocio: %(name)s") % {'name': a.get('business_name', '')},
-        'set_tax_config': lambda a: _("Configurar impuestos: %(rate)s%% (incluido: %(included)s)") % {'rate': a.get('tax_rate', ''), 'included': a.get('tax_included', '')},
-        'complete_setup_step': lambda a: _("Completar configuración inicial del hub"),
+        'update_store_config': lambda a: _("Update store configuration: %(fields)s") % {'fields': ', '.join(k for k, v in a.items() if v is not None)},
+        'select_blocks': lambda a: _("Select dashboard blocks: %(blocks)s") % {'blocks': ', '.join(a.get('block_slugs', []))},
+        'enable_module': lambda a: _("Enable module: %(module)s") % {'module': a.get('module_id', '')},
+        'disable_module': lambda a: _("Disable module: %(module)s") % {'module': a.get('module_id', '')},
+        'create_role': lambda a: _("Create role: %(name)s") % {'name': a.get('display_name', a.get('name', ''))},
+        'create_employee': lambda a: _("Create employee: %(name)s (%(role)s)") % {'name': a.get('name', ''), 'role': a.get('role_name', '')},
+        'create_tax_class': lambda a: _("Create tax class: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
+        'set_regional_config': lambda a: _("Set region and format: %(config)s") % {'config': ', '.join(f'{k}={v}' for k, v in a.items() if v is not None)},
+        'set_business_info': lambda a: _("Set business information: %(name)s") % {'name': a.get('business_name', '')},
+        'set_tax_config': lambda a: _("Configure taxes: %(rate)s%% (included: %(included)s)") % {'rate': a.get('tax_rate', ''), 'included': a.get('tax_included', '')},
+        'complete_setup_step': lambda a: _("Complete initial hub setup"),
         'execute_plan': lambda a: _summarize_plan_steps(a.get('steps', [])),
         # Inventory
-        'create_product': lambda a: _("Crear producto: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
-        'update_product': lambda a: _("Actualizar producto: %(id)s") % {'id': a.get('product_id', '')},
-        'create_category': lambda a: _("Crear categoría: %(name)s") % {'name': a.get('name', '')},
-        'adjust_stock': lambda a: _("Ajustar stock: %(qty)s uds. del producto %(id)s") % {'qty': a.get('quantity', ''), 'id': a.get('product_id', '')},
-        'bulk_adjust_stock': lambda a: _("Ajustar stock masivo (%(count)s productos): %(reason)s") % {'count': len(a.get('items', [])), 'reason': a.get('reason', '')},
+        'create_product': lambda a: _("Create product: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
+        'update_product': lambda a: _("Update product: %(id)s") % {'id': a.get('product_id', '')},
+        'create_category': lambda a: _("Create category: %(name)s") % {'name': a.get('name', '')},
+        'adjust_stock': lambda a: _("Adjust stock: %(qty)s units of product %(id)s") % {'qty': a.get('quantity', ''), 'id': a.get('product_id', '')},
+        'bulk_adjust_stock': lambda a: _("Bulk stock adjustment (%(count)s products): %(reason)s") % {'count': len(a.get('items', [])), 'reason': a.get('reason', '')},
         # Customers
-        'create_customer': lambda a: _("Crear cliente: %(name)s") % {'name': a.get('name', '')},
-        'update_customer': lambda a: _("Actualizar cliente: %(id)s") % {'id': a.get('customer_id', '')},
+        'create_customer': lambda a: _("Create customer: %(name)s") % {'name': a.get('name', '')},
+        'update_customer': lambda a: _("Update customer: %(id)s") % {'id': a.get('customer_id', '')},
         # Services
-        'create_service': lambda a: _("Crear servicio: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
-        'create_service_category': lambda a: _("Crear categoría de servicio: %(name)s") % {'name': a.get('name', '')},
-        'update_service': lambda a: _("Actualizar servicio: %(id)s") % {'id': a.get('service_id', '')},
+        'create_service': lambda a: _("Create service: %(name)s (%(price)s)") % {'name': a.get('name', ''), 'price': a.get('price', '')},
+        'create_service_category': lambda a: _("Create service category: %(name)s") % {'name': a.get('name', '')},
+        'update_service': lambda a: _("Update service: %(id)s") % {'id': a.get('service_id', '')},
         # Quotes
-        'create_quote': lambda a: _("Crear presupuesto: %(title)s") % {'title': a.get('title', '')},
-        'update_quote_status': lambda a: _("Cambiar estado del presupuesto %(id)s → %(action)s") % {'id': a.get('quote_id', ''), 'action': a.get('action', '')},
+        'create_quote': lambda a: _("Create quote: %(title)s") % {'title': a.get('title', '')},
+        'update_quote_status': lambda a: _("Update quote %(id)s status to %(action)s") % {'id': a.get('quote_id', ''), 'action': a.get('action', '')},
         # Leads
-        'create_lead': lambda a: _("Crear lead: %(name)s (%(company)s)") % {'name': a.get('name', ''), 'company': a.get('company', '')},
-        'move_lead_stage': lambda a: _("Mover lead %(id)s a la etapa %(stage)s") % {'id': a.get('lead_id', ''), 'stage': a.get('stage_id', '')},
+        'create_lead': lambda a: _("Create lead: %(name)s (%(company)s)") % {'name': a.get('name', ''), 'company': a.get('company', '')},
+        'move_lead_stage': lambda a: _("Move lead %(id)s to stage %(stage)s") % {'id': a.get('lead_id', ''), 'stage': a.get('stage_id', '')},
         # Purchase Orders
-        'create_purchase_order': lambda a: _("Crear orden de compra para proveedor %(id)s") % {'id': a.get('supplier_id', '')},
+        'create_purchase_order': lambda a: _("Create purchase order for supplier %(id)s") % {'id': a.get('supplier_id', '')},
         # Appointments
-        'create_appointment': lambda a: _("Reservar cita: %(customer)s el %(datetime)s") % {'customer': a.get('customer_name', ''), 'datetime': a.get('start_datetime', '')},
+        'create_appointment': lambda a: _("Book appointment: %(customer)s on %(datetime)s") % {'customer': a.get('customer_name', ''), 'datetime': a.get('start_datetime', '')},
         # Expenses
-        'create_expense': lambda a: _("Registrar gasto: %(title)s (%(amount)s)") % {'title': a.get('title', ''), 'amount': a.get('amount', '')},
+        'create_expense': lambda a: _("Record expense: %(title)s (%(amount)s)") % {'title': a.get('title', ''), 'amount': a.get('amount', '')},
         # Projects
-        'create_project': lambda a: _("Crear proyecto: %(name)s") % {'name': a.get('name', '')},
-        'log_time_entry': lambda a: _("Registrar %(hours)sh en el proyecto %(id)s") % {'hours': a.get('hours', ''), 'id': a.get('project_id', '')},
+        'create_project': lambda a: _("Create project: %(name)s") % {'name': a.get('name', '')},
+        'log_time_entry': lambda a: _("Log %(hours)sh on project %(id)s") % {'hours': a.get('hours', ''), 'id': a.get('project_id', '')},
         # Support
-        'create_ticket': lambda a: _("Crear ticket: %(subject)s") % {'subject': a.get('subject', '')},
+        'create_ticket': lambda a: _("Create support ticket: %(subject)s") % {'subject': a.get('subject', '')},
         # Discounts
-        'create_coupon': lambda a: _("Crear cupón: %(code)s (%(value)s%(type)s)") % {'code': a.get('code', ''), 'value': a.get('discount_value', ''), 'type': a.get('discount_type', '')},
+        'create_coupon': lambda a: _("Create coupon: %(code)s (%(value)s%(type)s)") % {'code': a.get('code', ''), 'value': a.get('discount_value', ''), 'type': a.get('discount_type', '')},
         # Loyalty
-        'award_loyalty_points': lambda a: _("Otorgar %(points)s puntos al miembro %(id)s") % {'points': a.get('points', ''), 'id': a.get('member_id', '')},
+        'award_loyalty_points': lambda a: _("Award %(points)s loyalty points to member %(id)s") % {'points': a.get('points', ''), 'id': a.get('member_id', '')},
         # Shipping
-        'create_shipment': lambda a: _("Crear envío para %(name)s") % {'name': a.get('recipient_name', '')},
+        'create_shipment': lambda a: _("Create shipment for %(name)s") % {'name': a.get('recipient_name', '')},
         # Gift Cards
-        'create_gift_card': lambda a: _("Crear tarjeta regalo: valor %(balance)s") % {'balance': a.get('initial_balance', '')},
+        'create_gift_card': lambda a: _("Create gift card with balance %(balance)s") % {'balance': a.get('initial_balance', '')},
         # Analytics
-        'update_analytics_settings': lambda a: _("Actualizar configuración de analíticas"),
+        'update_analytics_settings': lambda a: _("Update analytics settings"),
         # Pricing
-        'create_price_list': lambda a: _("Crear lista de precios: %(name)s") % {'name': a.get('name', '')},
-        'add_price_rule': lambda a: _("Añadir regla de precio a la lista %(id)s") % {'id': a.get('price_list_id', '')},
+        'create_price_list': lambda a: _("Create price list: %(name)s") % {'name': a.get('name', '')},
+        'add_price_rule': lambda a: _("Add pricing rule to list %(id)s") % {'id': a.get('price_list_id', '')},
         # Accounting Sync
-        'toggle_accounting_sync': lambda a: _("%(action)s sincronización contable: %(id)s") % {'action': _('Activar') if a.get('enabled') else _('Desactivar'), 'id': a.get('connection_id', '')},
-        'trigger_accounting_sync': lambda a: _("Ejecutar sincronización contable: %(id)s") % {'id': a.get('connection_id', '')},
+        'toggle_accounting_sync': lambda a: _("%(action)s accounting sync: %(id)s") % {'action': _('Enable') if a.get('enabled') else _('Disable'), 'id': a.get('connection_id', '')},
+        'trigger_accounting_sync': lambda a: _("Run accounting sync: %(id)s") % {'id': a.get('connection_id', '')},
         # Reservations
-        'create_reservation': lambda a: _("Crear reserva: %(name)s") % {'name': a.get('customer_name', '')},
-        'update_reservation_status': lambda a: _("Cambiar estado de reserva %(id)s → %(status)s") % {'id': a.get('reservation_id', ''), 'status': a.get('status', '')},
-        'create_time_slot': lambda a: _("Crear franja horaria: %(day)s %(start)s-%(end)s") % {'day': a.get('day_of_week', ''), 'start': a.get('start_time', ''), 'end': a.get('end_time', '')},
-        'create_blocked_date': lambda a: _("Bloquear fecha: %(date)s") % {'date': a.get('date', '')},
-        'update_reservation_settings': lambda a: _("Actualizar configuración de reservas"),
-        'create_zone': lambda a: _("Crear zona: %(name)s") % {'name': a.get('name', '')},
+        'create_reservation': lambda a: _("Create reservation: %(name)s") % {'name': a.get('customer_name', '')},
+        'update_reservation_status': lambda a: _("Update reservation %(id)s status to %(status)s") % {'id': a.get('reservation_id', ''), 'status': a.get('status', '')},
+        'create_time_slot': lambda a: _("Create time slot: %(day)s %(start)s-%(end)s") % {'day': a.get('day_of_week', ''), 'start': a.get('start_time', ''), 'end': a.get('end_time', '')},
+        'create_blocked_date': lambda a: _("Block date: %(date)s") % {'date': a.get('date', '')},
+        'update_reservation_settings': lambda a: _("Update reservation settings"),
+        'create_zone': lambda a: _("Create zone: %(name)s") % {'name': a.get('name', '')},
         # Tables
-        'create_table': lambda a: _("Crear mesa: %(name)s") % {'name': a.get('name', '')},
-        'update_table': lambda a: _("Actualizar mesa: %(id)s") % {'id': a.get('table_id', '')},
-        'bulk_create_tables': lambda a: _("Crear %(count)s mesas") % {'count': a.get('count', '')},
-        'open_table_session': lambda a: _("Abrir sesión de mesa: %(id)s") % {'id': a.get('table_id', '')},
+        'create_table': lambda a: _("Create table: %(name)s") % {'name': a.get('name', '')},
+        'update_table': lambda a: _("Update table: %(id)s") % {'id': a.get('table_id', '')},
+        'bulk_create_tables': lambda a: _("Create %(count)s tables") % {'count': a.get('count', '')},
+        'open_table_session': lambda a: _("Open table session: %(id)s") % {'id': a.get('table_id', '')},
         # Attendance
-        'create_attendance_record': lambda a: _("Registrar asistencia: empleado %(id)s") % {'id': a.get('employee_id', '')},
+        'create_attendance_record': lambda a: _("Record attendance for employee %(id)s") % {'id': a.get('employee_id', '')},
         # Maintenance
-        'create_work_order': lambda a: _("Crear orden de trabajo: %(title)s") % {'title': a.get('title', a.get('description', '')[:50])},
-        'create_maintenance_order': lambda a: _("Crear orden de mantenimiento: %(title)s") % {'title': a.get('title', '')},
+        'create_work_order': lambda a: _("Create work order: %(title)s") % {'title': a.get('title', a.get('description', '')[:50])},
+        'create_maintenance_order': lambda a: _("Create maintenance order: %(title)s") % {'title': a.get('title', '')},
         # Online Payments
-        'create_payment_link': lambda a: _("Crear enlace de pago: %(amount)s") % {'amount': a.get('amount', '')},
-        'create_payment_method': lambda a: _("Crear método de pago: %(name)s") % {'name': a.get('name', '')},
+        'create_payment_link': lambda a: _("Create payment link: %(amount)s") % {'amount': a.get('amount', '')},
+        'create_payment_method': lambda a: _("Create payment method: %(name)s") % {'name': a.get('name', '')},
         # Accounting
-        'create_account': lambda a: _("Crear cuenta contable: %(code)s %(name)s") % {'code': a.get('code', ''), 'name': a.get('name', '')},
-        'create_journal_entry': lambda a: _("Crear asiento contable: %(desc)s") % {'desc': a.get('description', '')},
+        'create_account': lambda a: _("Create accounting entry: %(code)s %(name)s") % {'code': a.get('code', ''), 'name': a.get('name', '')},
+        'create_journal_entry': lambda a: _("Create journal entry: %(desc)s") % {'desc': a.get('description', '')},
         # Feedback
-        'create_feedback_form': lambda a: _("Crear formulario de valoración: %(title)s") % {'title': a.get('title', '')},
+        'create_feedback_form': lambda a: _("Create feedback form: %(title)s") % {'title': a.get('title', '')},
         # Manufacturing
-        'create_bom': lambda a: _("Crear lista de materiales: %(name)s") % {'name': a.get('name', '')},
-        'create_production_order': lambda a: _("Crear orden de producción: %(id)s") % {'id': a.get('bom_id', '')},
+        'create_bom': lambda a: _("Create bill of materials: %(name)s") % {'name': a.get('name', '')},
+        'create_production_order': lambda a: _("Create production order: %(id)s") % {'id': a.get('bom_id', '')},
         # Reports
-        'create_report': lambda a: _("Crear informe: %(name)s") % {'name': a.get('name', '')},
+        'create_report': lambda a: _("Create report: %(name)s") % {'name': a.get('name', '')},
         # Messaging
-        'create_message_template': lambda a: _("Crear plantilla de mensaje: %(name)s") % {'name': a.get('name', '')},
-        'create_message_automation': lambda a: _("Crear automatización: %(name)s") % {'name': a.get('name', '')},
+        'create_message_template': lambda a: _("Create message template: %(name)s") % {'name': a.get('name', '')},
+        'create_message_automation': lambda a: _("Create automation: %(name)s") % {'name': a.get('name', '')},
         # Approvals
-        'approve_approval_request': lambda a: _("Aprobar solicitud: %(id)s") % {'id': a.get('request_id', '')},
-        'reject_approval_request': lambda a: _("Rechazar solicitud: %(id)s") % {'id': a.get('request_id', '')},
+        'approve_approval_request': lambda a: _("Approve request: %(id)s") % {'id': a.get('request_id', '')},
+        'reject_approval_request': lambda a: _("Reject request: %(id)s") % {'id': a.get('request_id', '')},
         # Training
-        'create_training_program': lambda a: _("Crear programa de formación: %(name)s") % {'name': a.get('name', '')},
-        'enroll_employee_in_training': lambda a: _("Inscribir empleado %(emp)s en formación %(prog)s") % {'emp': a.get('employee_id', ''), 'prog': a.get('program_id', '')},
+        'create_training_program': lambda a: _("Create training program: %(name)s") % {'name': a.get('name', '')},
+        'enroll_employee_in_training': lambda a: _("Enroll employee %(emp)s in training %(prog)s") % {'emp': a.get('employee_id', ''), 'prog': a.get('program_id', '')},
         # Returns
-        'create_return_reason': lambda a: _("Crear motivo de devolución: %(name)s") % {'name': a.get('name', '')},
+        'create_return_reason': lambda a: _("Create return reason: %(name)s") % {'name': a.get('name', '')},
         # Assets
-        'create_asset': lambda a: _("Crear activo: %(name)s") % {'name': a.get('name', '')},
-        'create_asset_maintenance': lambda a: _("Programar mantenimiento del activo: %(id)s") % {'id': a.get('asset_id', '')},
+        'create_asset': lambda a: _("Create asset: %(name)s") % {'name': a.get('name', '')},
+        'create_asset_maintenance': lambda a: _("Schedule asset maintenance: %(id)s") % {'id': a.get('asset_id', '')},
         # Warehouse
-        'create_warehouse': lambda a: _("Crear almacén: %(name)s") % {'name': a.get('name', '')},
-        'create_warehouse_zone': lambda a: _("Crear zona de almacén: %(name)s") % {'name': a.get('name', '')},
+        'create_warehouse': lambda a: _("Create warehouse: %(name)s") % {'name': a.get('name', '')},
+        'create_warehouse_zone': lambda a: _("Create warehouse zone: %(name)s") % {'name': a.get('name', '')},
         # Facturae
-        'create_facturae_invoice': lambda a: _("Crear factura electrónica: %(id)s") % {'id': a.get('invoice_id', '')},
-        'update_facturae_status': lambda a: _("Cambiar estado de Facturae %(id)s → %(action)s") % {'id': a.get('facturae_id', ''), 'action': a.get('action', '')},
+        'create_facturae_invoice': lambda a: _("Create electronic invoice: %(id)s") % {'id': a.get('invoice_id', '')},
+        'update_facturae_status': lambda a: _("Update Facturae %(id)s status to %(action)s") % {'id': a.get('facturae_id', ''), 'action': a.get('action', '')},
         # Payroll
-        'create_payslip': lambda a: _("Crear nómina: empleado %(id)s (%(period)s)") % {'id': a.get('employee_id', ''), 'period': a.get('period', '')},
-        'update_payslip_status': lambda a: _("Cambiar estado de nómina %(id)s → %(action)s") % {'id': a.get('payslip_id', ''), 'action': a.get('action', '')},
+        'create_payslip': lambda a: _("Create payslip: employee %(id)s (%(period)s)") % {'id': a.get('employee_id', ''), 'period': a.get('period', '')},
+        'update_payslip_status': lambda a: _("Update payslip %(id)s status to %(action)s") % {'id': a.get('payslip_id', ''), 'action': a.get('action', '')},
         # Marketing Campaigns
-        'create_marketing_campaign': lambda a: _("Crear campaña: %(name)s") % {'name': a.get('name', '')},
+        'create_marketing_campaign': lambda a: _("Create marketing campaign: %(name)s") % {'name': a.get('name', '')},
         # Commissions
-        'create_commission_rule': lambda a: _("Crear regla de comisión: %(name)s") % {'name': a.get('name', '')},
+        'create_commission_rule': lambda a: _("Create commission rule: %(name)s") % {'name': a.get('name', '')},
         # E-Sign
-        'create_signature_request': lambda a: _("Solicitar firma: %(doc)s") % {'doc': a.get('document_name', a.get('title', ''))},
+        'create_signature_request': lambda a: _("Request signature: %(doc)s") % {'doc': a.get('document_name', a.get('title', ''))},
         # Budgets
-        'create_budget': lambda a: _("Crear presupuesto: %(name)s") % {'name': a.get('name', '')},
+        'create_budget': lambda a: _("Create budget: %(name)s") % {'name': a.get('name', '')},
         # API Connect / Webhooks
-        'create_webhook': lambda a: _("Crear webhook: %(url)s") % {'url': a.get('url', a.get('name', ''))},
+        'create_webhook': lambda a: _("Create webhook: %(url)s") % {'url': a.get('url', a.get('name', ''))},
         # Marketplace Connect
-        'toggle_marketplace_sync': lambda a: _("%(action)s sincronización de marketplace: %(id)s") % {'action': _('Activar') if a.get('enabled') else _('Desactivar'), 'id': a.get('connection_id', '')},
+        'toggle_marketplace_sync': lambda a: _("%(action)s marketplace sync: %(id)s") % {'action': _('Enable') if a.get('enabled') else _('Disable'), 'id': a.get('connection_id', '')},
         # Patient Records
-        'create_patient': lambda a: _("Crear paciente: %(name)s") % {'name': a.get('name', '')},
-        'create_treatment': lambda a: _("Crear tratamiento: %(name)s") % {'name': a.get('name', a.get('treatment_type', ''))},
+        'create_patient': lambda a: _("Create patient: %(name)s") % {'name': a.get('name', '')},
+        'create_treatment': lambda a: _("Create treatment: %(name)s") % {'name': a.get('name', a.get('treatment_type', ''))},
         # Surveys
-        'create_survey': lambda a: _("Crear encuesta: %(title)s") % {'title': a.get('title', '')},
+        'create_survey': lambda a: _("Create survey: %(title)s") % {'title': a.get('title', '')},
         # Live Chat
-        'assign_chat_conversation': lambda a: _("Asignar chat %(id)s al agente %(agent)s") % {'id': a.get('conversation_id', ''), 'agent': a.get('agent_id', '')},
-        'close_chat_conversation': lambda a: _("Cerrar conversación de chat: %(id)s") % {'id': a.get('conversation_id', '')},
-        'send_chat_message': lambda a: _("Enviar mensaje en conversación %(id)s") % {'id': a.get('conversation_id', '')},
+        'assign_chat_conversation': lambda a: _("Assign chat %(id)s to agent %(agent)s") % {'id': a.get('conversation_id', ''), 'agent': a.get('agent_id', '')},
+        'close_chat_conversation': lambda a: _("Close chat conversation: %(id)s") % {'id': a.get('conversation_id', '')},
+        'send_chat_message': lambda a: _("Send message in conversation %(id)s") % {'id': a.get('conversation_id', '')},
         # Recruitment
-        'create_job_position': lambda a: _("Crear puesto de trabajo: %(title)s") % {'title': a.get('title', '')},
-        'create_candidate': lambda a: _("Crear candidato: %(name)s") % {'name': a.get('name', '')},
+        'create_job_position': lambda a: _("Create job position: %(title)s") % {'title': a.get('title', '')},
+        'create_candidate': lambda a: _("Create candidate: %(name)s") % {'name': a.get('name', '')},
         # Multicurrency
-        'add_currency': lambda a: _("Añadir moneda: %(code)s") % {'code': a.get('code', '')},
-        'update_exchange_rate': lambda a: _("Actualizar tipo de cambio: %(id)s → %(rate)s") % {'id': a.get('currency_id', ''), 'rate': a.get('rate', '')},
+        'add_currency': lambda a: _("Add currency: %(code)s") % {'code': a.get('code', '')},
+        'update_exchange_rate': lambda a: _("Update exchange rate: %(id)s to %(rate)s") % {'id': a.get('currency_id', ''), 'rate': a.get('rate', '')},
         # Properties
-        'create_property': lambda a: _("Crear propiedad: %(name)s") % {'name': a.get('name', '')},
-        'create_tenant': lambda a: _("Crear inquilino: %(name)s") % {'name': a.get('name', '')},
-        'create_lease': lambda a: _("Crear contrato de alquiler: propiedad %(id)s") % {'id': a.get('property_id', '')},
+        'create_property': lambda a: _("Create property: %(name)s") % {'name': a.get('name', '')},
+        'create_tenant': lambda a: _("Create tenant: %(name)s") % {'name': a.get('name', '')},
+        'create_lease': lambda a: _("Create lease for property %(id)s") % {'id': a.get('property_id', '')},
         # Tasks
-        'create_task': lambda a: _("Crear tarea: %(title)s") % {'title': a.get('title', '')},
-        'update_task_status': lambda a: _("Cambiar estado de tarea %(id)s → %(status)s") % {'id': a.get('task_id', ''), 'status': a.get('status', '')},
+        'create_task': lambda a: _("Create task: %(title)s") % {'title': a.get('title', '')},
+        'update_task_status': lambda a: _("Update task %(id)s status to %(status)s") % {'id': a.get('task_id', ''), 'status': a.get('status', '')},
         # SII
-        'create_sii_submission': lambda a: _("Crear envío SII: %(type)s (%(period)s)") % {'type': a.get('submission_type', ''), 'period': a.get('period', '')},
+        'create_sii_submission': lambda a: _("Create SII submission: %(type)s (%(period)s)") % {'type': a.get('submission_type', ''), 'period': a.get('period', '')},
         # Schedules / Business Hours
-        'set_business_hours': lambda a: _("Configurar horario comercial: %(day)s") % {'day': a.get('day_of_week', '')},
-        'create_special_day': lambda a: _("Crear día especial: %(date)s") % {'date': a.get('date', '')},
-        'bulk_set_business_hours': lambda a: _("Configurar horario comercial (%(count)s días)") % {'count': len(a.get('schedules', []))},
+        'set_business_hours': lambda a: _("Set business hours: %(day)s") % {'day': a.get('day_of_week', '')},
+        'create_special_day': lambda a: _("Create special day: %(date)s") % {'date': a.get('date', '')},
+        'bulk_set_business_hours': lambda a: _("Set business hours (%(count)s days)") % {'count': len(a.get('schedules', []))},
         # Notifications
-        'mark_notifications_read': lambda a: _("Marcar notificaciones como leídas"),
+        'mark_notifications_read': lambda a: _("Mark notifications as read"),
         # Leave
-        'create_leave_request': lambda a: _("Crear solicitud de ausencia: %(type)s (%(start)s - %(end)s)") % {'type': a.get('leave_type', ''), 'start': a.get('start_date', ''), 'end': a.get('end_date', '')},
-        'approve_leave_request': lambda a: _("Aprobar solicitud de ausencia: %(id)s") % {'id': a.get('request_id', '')},
-        'reject_leave_request': lambda a: _("Rechazar solicitud de ausencia: %(id)s") % {'id': a.get('request_id', '')},
+        'create_leave_request': lambda a: _("Create leave request: %(type)s (%(start)s - %(end)s)") % {'type': a.get('leave_type', ''), 'start': a.get('start_date', ''), 'end': a.get('end_date', '')},
+        'approve_leave_request': lambda a: _("Approve leave request: %(id)s") % {'id': a.get('request_id', '')},
+        'reject_leave_request': lambda a: _("Reject leave request: %(id)s") % {'id': a.get('request_id', '')},
         # Data Export
-        'create_export_job': lambda a: _("Crear exportación: %(type)s (%(format)s)") % {'type': a.get('export_type', ''), 'format': a.get('format', '')},
+        'create_export_job': lambda a: _("Create data export: %(type)s (%(format)s)") % {'type': a.get('export_type', ''), 'format': a.get('format', '')},
         # Segments
-        'create_segment': lambda a: _("Crear segmento: %(name)s") % {'name': a.get('name', '')},
+        'create_segment': lambda a: _("Create segment: %(name)s") % {'name': a.get('name', '')},
         # GDPR
-        'create_data_request': lambda a: _("Crear solicitud RGPD: %(type)s") % {'type': a.get('request_type', '')},
+        'create_data_request': lambda a: _("Create GDPR data request: %(type)s") % {'type': a.get('request_type', '')},
         # Staff
-        'create_staff_member': lambda a: _("Crear miembro del equipo: %(name)s") % {'name': a.get('name', '')},
-        'create_staff_role': lambda a: _("Crear rol de equipo: %(name)s") % {'name': a.get('name', '')},
-        'create_time_off_request': lambda a: _("Crear solicitud de tiempo libre: %(id)s") % {'id': a.get('staff_id', '')},
-        'assign_service_to_staff': lambda a: _("Asignar servicio %(service)s al empleado %(staff)s") % {'service': a.get('service_id', ''), 'staff': a.get('staff_id', '')},
+        'create_staff_member': lambda a: _("Create staff member: %(name)s") % {'name': a.get('name', '')},
+        'create_staff_role': lambda a: _("Create staff role: %(name)s") % {'name': a.get('name', '')},
+        'create_time_off_request': lambda a: _("Create time-off request for staff %(id)s") % {'id': a.get('staff_id', '')},
+        'assign_service_to_staff': lambda a: _("Assign service %(service)s to staff %(staff)s") % {'service': a.get('service_id', ''), 'staff': a.get('staff_id', '')},
         # Students / Course
-        'create_student': lambda a: _("Crear alumno: %(name)s") % {'name': a.get('name', '')},
-        'create_enrollment': lambda a: _("Crear matrícula: alumno %(id)s") % {'id': a.get('student_id', '')},
-        'create_course': lambda a: _("Crear curso: %(name)s") % {'name': a.get('name', '')},
+        'create_student': lambda a: _("Create student: %(name)s") % {'name': a.get('name', '')},
+        'create_enrollment': lambda a: _("Create enrollment for student %(id)s") % {'id': a.get('student_id', '')},
+        'create_course': lambda a: _("Create course: %(name)s") % {'name': a.get('name', '')},
         # Fleet
-        'create_vehicle': lambda a: _("Crear vehículo: %(name)s") % {'name': a.get('name', a.get('plate_number', ''))},
-        'create_fuel_log': lambda a: _("Registrar repostaje: vehículo %(id)s") % {'id': a.get('vehicle_id', '')},
+        'create_vehicle': lambda a: _("Create vehicle: %(name)s") % {'name': a.get('name', a.get('plate_number', ''))},
+        'create_fuel_log': lambda a: _("Record fuel log for vehicle %(id)s") % {'id': a.get('vehicle_id', '')},
         # Referrals
-        'create_referral': lambda a: _("Crear referido: %(name)s") % {'name': a.get('referrer_name', a.get('name', ''))},
+        'create_referral': lambda a: _("Create referral: %(name)s") % {'name': a.get('referrer_name', a.get('name', ''))},
         # Tax
-        'create_tax_rate': lambda a: _("Crear tipo impositivo: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
+        'create_tax_rate': lambda a: _("Create tax rate: %(name)s (%(rate)s%%)") % {'name': a.get('name', ''), 'rate': a.get('rate', '')},
         # Document Templates
-        'create_document_template': lambda a: _("Crear plantilla de documento: %(name)s") % {'name': a.get('name', '')},
+        'create_document_template': lambda a: _("Create document template: %(name)s") % {'name': a.get('name', '')},
         # Contracts
-        'create_contract': lambda a: _("Crear contrato: %(title)s") % {'title': a.get('title', '')},
-        'update_contract_status': lambda a: _("Cambiar estado del contrato %(id)s → %(status)s") % {'id': a.get('contract_id', ''), 'status': a.get('status', '')},
+        'create_contract': lambda a: _("Create contract: %(title)s") % {'title': a.get('title', '')},
+        'update_contract_status': lambda a: _("Update contract %(id)s status to %(status)s") % {'id': a.get('contract_id', ''), 'status': a.get('status', '')},
         # Cash Register
-        'create_cash_register': lambda a: _("Crear caja registradora: %(name)s") % {'name': a.get('name', '')},
-        'close_cash_session': lambda a: _("Cerrar sesión de caja: %(id)s (saldo: %(balance)s)") % {'id': a.get('session_id', ''), 'balance': a.get('closing_balance', '')},
+        'create_cash_register': lambda a: _("Create cash register: %(name)s") % {'name': a.get('name', '')},
+        'close_cash_session': lambda a: _("Close cash session: %(id)s (balance: %(balance)s)") % {'id': a.get('session_id', ''), 'balance': a.get('closing_balance', '')},
         # Orders / Kitchen
-        'create_order': lambda a: _("Crear pedido: %(ref)s") % {'ref': a.get('table_id', a.get('customer_name', ''))},
-        'update_order_status': lambda a: _("Cambiar estado del pedido %(id)s → %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
-        'create_kitchen_station': lambda a: _("Crear estación de cocina: %(name)s") % {'name': a.get('name', '')},
-        'set_station_routing': lambda a: _("Configurar enrutamiento de estación: %(id)s") % {'id': a.get('station_id', '')},
-        'update_orders_settings': lambda a: _("Actualizar configuración de pedidos"),
-        'bump_order_item': lambda a: _("Marcar como listo: artículo %(id)s") % {'id': a.get('item_id', '')},
-        'bump_order': lambda a: _("Marcar pedido como listo: %(id)s") % {'id': a.get('order_id', '')},
-        'recall_order': lambda a: _("Recuperar pedido: %(id)s") % {'id': a.get('order_id', '')},
-        'update_kitchen_settings': lambda a: _("Actualizar configuración de cocina"),
+        'create_order': lambda a: _("Create order: %(ref)s") % {'ref': a.get('table_id', a.get('customer_name', ''))},
+        'update_order_status': lambda a: _("Update order %(id)s status to %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
+        'create_kitchen_station': lambda a: _("Create kitchen station: %(name)s") % {'name': a.get('name', '')},
+        'set_station_routing': lambda a: _("Configure station routing: %(id)s") % {'id': a.get('station_id', '')},
+        'update_orders_settings': lambda a: _("Update orders settings"),
+        'bump_order_item': lambda a: _("Mark item as ready: %(id)s") % {'id': a.get('item_id', '')},
+        'bump_order': lambda a: _("Mark order as ready: %(id)s") % {'id': a.get('order_id', '')},
+        'recall_order': lambda a: _("Recall order: %(id)s") % {'id': a.get('order_id', '')},
+        'update_kitchen_settings': lambda a: _("Update kitchen settings"),
         # Email Marketing
-        'create_email_template': lambda a: _("Crear plantilla de email: %(name)s") % {'name': a.get('name', '')},
+        'create_email_template': lambda a: _("Create email template: %(name)s") % {'name': a.get('name', '')},
         # Knowledge Base
-        'create_kb_category': lambda a: _("Crear categoría de base de conocimiento: %(name)s") % {'name': a.get('name', '')},
-        'create_kb_article': lambda a: _("Crear artículo de ayuda: %(title)s") % {'title': a.get('title', '')},
+        'create_kb_category': lambda a: _("Create knowledge base category: %(name)s") % {'name': a.get('name', '')},
+        'create_kb_article': lambda a: _("Create help article: %(title)s") % {'title': a.get('title', '')},
         # Quality
-        'create_inspection': lambda a: _("Crear inspección: %(name)s") % {'name': a.get('name', a.get('title', ''))},
+        'create_inspection': lambda a: _("Create quality inspection: %(name)s") % {'name': a.get('name', a.get('title', ''))},
         # E-commerce
-        'update_online_order_status': lambda a: _("Cambiar estado del pedido online %(id)s → %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
+        'update_online_order_status': lambda a: _("Update online order %(id)s status to %(status)s") % {'id': a.get('order_id', ''), 'status': a.get('status', '')},
         # Subscriptions
-        'create_subscription': lambda a: _("Crear suscripción: cliente %(id)s") % {'id': a.get('customer_id', '')},
-        'update_subscription_status': lambda a: _("Cambiar estado de suscripción %(id)s → %(status)s") % {'id': a.get('subscription_id', ''), 'status': a.get('status', '')},
+        'create_subscription': lambda a: _("Create subscription for customer %(id)s") % {'id': a.get('customer_id', '')},
+        'update_subscription_status': lambda a: _("Update subscription %(id)s status to %(status)s") % {'id': a.get('subscription_id', ''), 'status': a.get('status', '')},
         # Invoicing
-        'create_invoice': lambda a: _("Crear factura: cliente %(id)s") % {'id': a.get('customer_id', '')},
-        'update_invoice_status': lambda a: _("Cambiar estado de factura %(id)s → %(action)s") % {'id': a.get('invoice_id', ''), 'action': a.get('action', a.get('status', ''))},
+        'create_invoice': lambda a: _("Create invoice for customer %(id)s") % {'id': a.get('customer_id', '')},
+        'update_invoice_status': lambda a: _("Update invoice %(id)s status to %(action)s") % {'id': a.get('invoice_id', ''), 'action': a.get('action', a.get('status', ''))},
         # Rentals
-        'create_rental_item': lambda a: _("Crear artículo de alquiler: %(name)s") % {'name': a.get('name', '')},
-        'create_rental': lambda a: _("Crear alquiler: cliente %(id)s") % {'id': a.get('customer_id', '')},
+        'create_rental_item': lambda a: _("Create rental item: %(name)s") % {'name': a.get('name', '')},
+        'create_rental': lambda a: _("Create rental for customer %(id)s") % {'id': a.get('customer_id', '')},
         # File Manager
-        'create_folder': lambda a: _("Crear carpeta: %(name)s") % {'name': a.get('name', '')},
+        'create_folder': lambda a: _("Create folder: %(name)s") % {'name': a.get('name', '')},
         # Online Booking
-        'update_booking_status': lambda a: _("Cambiar estado de reserva online %(id)s → %(action)s") % {'id': a.get('booking_id', ''), 'action': a.get('action', '')},
-        'create_online_booking': lambda a: _("Crear reserva online: %(name)s el %(date)s") % {'name': a.get('customer_name', ''), 'date': a.get('date', '')},
+        'update_booking_status': lambda a: _("Update online booking %(id)s status to %(action)s") % {'id': a.get('booking_id', ''), 'action': a.get('action', '')},
+        'create_online_booking': lambda a: _("Create online booking: %(name)s on %(date)s") % {'name': a.get('customer_name', ''), 'date': a.get('date', '')},
         # VoIP
-        'add_call_notes': lambda a: _("Añadir notas a la llamada %(id)s") % {'id': a.get('call_id', '')},
+        'add_call_notes': lambda a: _("Add notes to call %(id)s") % {'id': a.get('call_id', '')},
         # Bank Sync
-        'create_bank_account': lambda a: _("Crear cuenta bancaria: %(name)s") % {'name': a.get('name', '')},
+        'create_bank_account': lambda a: _("Create bank account: %(name)s") % {'name': a.get('name', '')},
         # Bulk operations
-        'bulk_create_employees': lambda a: _("Crear %(count)s empleados: %(names)s") % {'count': len(a.get('employees', [])), 'names': ', '.join(e.get('first_name', '') + ' ' + e.get('last_name', '') for e in a.get('employees', []))},
+        'bulk_create_employees': lambda a: _("Create %(count)s employees: %(names)s") % {'count': len(a.get('employees', [])), 'names': ', '.join(e.get('first_name', '') + ' ' + e.get('last_name', '') for e in a.get('employees', []))},
     }
 
     formatter = descriptions.get(tool_name)

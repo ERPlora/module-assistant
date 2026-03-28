@@ -9,7 +9,7 @@
             {% icon "information-circle-outline" %}
             <span class="font-semibold">{{ confirmation_data.title }}</span>
             {% if confirmation_data.badge %}
-            <span class="badge {{ confirmation_data.badge }}" style="margin-left:auto;">{% trans "Revisar" %}</span>
+            <span class="badge {{ confirmation_data.badge }}" style="margin-left:auto;">{% trans "Review" %}</span>
             {% endif %}
         </div>
         <div class="card-body" style="padding: 0;">
@@ -40,7 +40,7 @@
     <div class="callout callout-warning">
         <div class="callout-icon">{% icon "shield-checkmark-outline" %}</div>
         <div class="callout-content">
-            <div class="callout-title">{% trans "Confirmar acción" %}</div>
+            <div class="callout-title">{% trans "Confirm action" %}</div>
             <div class="callout-text">{{ description }}</div>
         </div>
     </div>
@@ -51,10 +51,10 @@
                 hx-target="#confirmation-{{ log_id }}"
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
-                hx-on::before-request="this.closest('.flex').querySelectorAll('button').forEach(b => b.disabled = true); this.innerHTML = '<span class=\'loading loading-sm\'></span> {% trans "Ejecutando..." %}';"
+                hx-on::before-request="this.closest('.flex').querySelectorAll('button').forEach(b => b.disabled = true); this.innerHTML = '<span class=\'loading loading-sm\'></span> {% trans "Executing..." %}';"
                 class="btn btn-sm color-primary">
             {% icon "checkmark-outline" %}
-            {% trans "Confirmar" %}
+            {% trans "Confirm" %}
         </button>
         <button hx-post="{% url 'assistant:cancel_action' log_id %}"
                 hx-target="#confirmation-{{ log_id }}"
@@ -62,7 +62,7 @@
                 hx-disabled-elt="this"
                 class="btn btn-sm btn-outline">
             {% icon "close-outline" %}
-            {% trans "Cancelar" %}
+            {% trans "Cancel" %}
         </button>
     </div>
 </div>
