@@ -848,6 +848,19 @@ def run_agentic_loop(user, conversation, ai_input, context, request,
 
                 # Confirmation check
                 if tool.requires_confirmation:
+                    # Deduplicate: only allow ONE execute_plan per LLM message.
+                    # GPT sometimes sends 2 variants (with/without params).
+                    if tool_name == 'execute_plan' and has_pending:
+                        tool_results.append({
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': _json_dumps({
+                                "error": "Only one execute_plan per message. "
+                                "The previous plan is already pending confirmation."
+                            }),
+                        })
+                        continue
+
                     # Use the first tool_call's id as the shared llm_message_id
                     # for all pending actions from this same LLM message.
                     if not pending_llm_message_id:
