@@ -1852,7 +1852,23 @@ def poll_progress(request, request_id):
                 'content': rendered_content,
             }, request=request))
 
-        for action in result.get('pending_actions', []):
+        # Filter out already-confirmed actions (race: user confirmed between
+        # cache write and poll read, or duplicate poll rendered it already).
+        pending_actions = result.get('pending_actions', [])
+        if pending_actions:
+            pending_ids = [a['log_id'] for a in pending_actions]
+            still_pending_ids = set(
+                str(uid) for uid in
+                AssistantActionLog.objects.filter(
+                    id__in=pending_ids, confirmed=False,
+                ).values_list('id', flat=True)
+            )
+        else:
+            still_pending_ids = set()
+
+        for action in pending_actions:
+            if action['log_id'] not in still_pending_ids:
+                continue
             html_parts.append(render_to_string('assistant/partials/confirmation.html', {
                 'log_id': action['log_id'],
                 'tool_name': action['tool_name'],
