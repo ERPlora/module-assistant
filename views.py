@@ -1946,7 +1946,17 @@ def _confirm_execute_plan_async(request, action_log, user_id):
             'error': True,
         }, request=request))
 
-    _set_progress(request_id, 'tool', _('Executing plan...'))
+    # Create persistent DB request so poll_progress DB fallback works
+    # (LocMemCache is per-process — polls may hit a different gunicorn worker)
+    db_request = AssistantRequest.objects.create(
+        conversation=conversation,
+        user=user,
+        user_message=f'[confirm:{action_log.tool_name}]',
+        status='processing',
+    )
+    db_req_id = db_request.id
+
+    _set_progress(request_id, 'tool', _('Executing plan...'), db_request_id=db_req_id)
 
     def _run_plan():
         from django.test import RequestFactory
@@ -1958,20 +1968,17 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                 action_log, fake_request, plan_request_id=request_id,
             )
             # Check if blueprint install flagged a deferred restart.
-            # ExecutePlan returns {results: [{result: {result: {restart_scheduled: True}}}]}
             plan_inner = plan_result.get('result', {})
             if isinstance(plan_inner, dict):
                 for step_res in plan_inner.get('results', []):
                     r = step_res.get('result', {})
                     if isinstance(r, dict):
-                        # _install_blueprint wraps BlueprintService result in 'result' key
                         inner = r.get('result', r)
                         if isinstance(inner, dict) and inner.get('restart_scheduled'):
                             needs_restart = True
                             break
 
             if plan_result['success']:
-                # Build resume_input and continue the agentic loop
                 call_id = action_log.tool_args.get('_call_id', '')
                 if call_id:
                     resume_input = [{
@@ -1989,29 +1996,38 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     loop_result = run_agentic_loop(
                         user, conversation, resume_input, context, fake_request,
                         request_id=request_id,
+                        db_request_id=db_req_id,
                     )
                     cache.set(f'assistant_result_{request_id}', loop_result, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'complete', '')
+                    _set_progress(request_id, 'complete', '', db_request_id=db_req_id)
+                    # Persist to DB for cross-worker access
+                    AssistantRequest.objects.filter(id=db_req_id).update(
+                        status='complete',
+                        response_text=loop_result.get('response_text', ''),
+                        pending_actions=loop_result.get('pending_actions', []),
+                    )
 
-                    # Now that result is safely stored, schedule the deferred restart
                     if needs_restart:
                         from apps.core.utils import schedule_server_restart
                         schedule_server_restart(delay=5)
                 except AgenticLoopError as e:
                     cache.set(f'assistant_result_{request_id}', {'error': str(e)}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', str(e))
+                    _set_progress(request_id, 'error', str(e), db_request_id=db_req_id)
+                    AssistantRequest.objects.filter(id=db_req_id).update(
+                        status='error', error_message=str(e))
                     if needs_restart:
                         from apps.core.utils import schedule_server_restart
                         schedule_server_restart(delay=5)
                 except Exception as e:
                     logger.error(f"[ASSISTANT] Plan resume loop error: {e}", exc_info=True)
                     cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-                    _set_progress(request_id, 'error', _('Something went wrong.'))
+                    _set_progress(request_id, 'error', _('Something went wrong.'), db_request_id=db_req_id)
+                    AssistantRequest.objects.filter(id=db_req_id).update(
+                        status='error', error_message=str(e))
                     if needs_restart:
                         from apps.core.utils import schedule_server_restart
                         schedule_server_restart(delay=5)
             else:
-                # Plan failed — build an error message with rollback info
                 err_msg = plan_result.get('message', 'Plan execution failed.')
                 rolled_back = plan_inner.get('rolled_back', [])
                 if rolled_back:
@@ -2021,19 +2037,19 @@ def _confirm_execute_plan_async(request, action_log, user_id):
                     ]
                     if rb_names:
                         err_msg += f" Rolled back: {', '.join(rb_names)}."
-                cache.set(
-                    f'assistant_result_{request_id}',
-                    {'error': err_msg},
-                    timeout=PROGRESS_CACHE_TIMEOUT,
-                )
-                _set_progress(request_id, 'error', err_msg)
+                cache.set(f'assistant_result_{request_id}', {'error': err_msg}, timeout=PROGRESS_CACHE_TIMEOUT)
+                _set_progress(request_id, 'error', err_msg, db_request_id=db_req_id)
+                AssistantRequest.objects.filter(id=db_req_id).update(
+                    status='error', error_message=err_msg)
                 if needs_restart:
                     from apps.core.utils import schedule_server_restart
                     schedule_server_restart(delay=5)
         except Exception as e:
             logger.error(f"[ASSISTANT] execute_plan async error: {e}", exc_info=True)
             cache.set(f'assistant_result_{request_id}', {'error': _('Something went wrong.')}, timeout=PROGRESS_CACHE_TIMEOUT)
-            _set_progress(request_id, 'error', _('Something went wrong.'))
+            _set_progress(request_id, 'error', _('Something went wrong.'), db_request_id=db_req_id)
+            AssistantRequest.objects.filter(id=db_req_id).update(
+                status='error', error_message=str(e))
             if needs_restart:
                 from apps.core.utils import schedule_server_restart
                 schedule_server_restart(delay=5)
