@@ -7,7 +7,7 @@ MODULE_DESCRIPTION = _(
     'customers, invoicing, and more. Supports voice input and tiered subscription '
     'plans (Basic, Pro, Enterprise) with different AI models and usage limits.'
 )
-MODULE_VERSION = '1.1.2'
+MODULE_VERSION = '1.1.3'
 MODULE_AUTHOR = 'ERPlora'
 MODULE_ICON = 'sparkles-outline'
 MODULE_CATEGORY = 'utilities'

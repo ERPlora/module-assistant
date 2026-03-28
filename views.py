@@ -1806,6 +1806,15 @@ def poll_progress(request, request_id):
                 }, request=request))
 
     if progress['type'] in ('complete', 'error'):
+        # Claim the result atomically to prevent duplicate confirmations.
+        # Two HTMX polls can race — the first one that claims wins.
+        claim_key = f'assistant_claimed_{request_id}'
+        if cache.get(claim_key):
+            # Another poll already claimed this result — return empty
+            cache.delete(f'assistant_progress_{request_id}')
+            return HttpResponse('')
+        cache.set(claim_key, True, timeout=30)
+
         # Get the final result
         result = cache.get(f'assistant_result_{request_id}')
 
